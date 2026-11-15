@@ -6,7 +6,7 @@ Say what the part is for and what filament is loaded. The server measures the mo
 
 It is a thin layer over the slicer's own command line. It is not a fork of OrcaSlicer, so there is no C++ to build and slicer updates need no merging.
 
-> **Status: early.** The settings logic and the server are covered by automated tests, including a check of every filament type against real Creator 5 presets. Slicing has been confirmed with Flash Studio 1.7 on macOS. Printing the resulting G-code and uploading to a real printer have not yet been confirmed. Check the first few prints carefully, and treat `send_to_printer` as experimental.
+> **Status: early.** Confirmed with Flash Studio 1.7 on macOS: choosing settings, slicing, and opening the result as a project that Flash Studio slices and sends to the printer. A finished print from these settings has not yet been assessed. `send_to_printer` over the LAN is untested; print from Flash Studio instead. See [docs/HANDOVER.md](docs/HANDOVER.md).
 
 ## What you need
 
@@ -137,7 +137,9 @@ The same engine without an MCP client. No quotation marks are needed.
 
 ## Printing the result
 
-The slicer's G-code preview is view-only: Flash Studio will not print from it. Use one of these:
+`slice_model` writes a project file (`project_3mf`) and `open_in_slicer` opens it in Flash Studio with the model and every setting loaded. Press Slice, then Print. This is the normal route.
+
+The slicer's G-code preview is view-only, so do not open the `.gcode`. Two other routes exist but are not needed:
 
 1. USB stick: copy the `.gcode` across (`--usb` does this) and start it from the printer's screen. Always works.
 2. Network: `send_to_printer`, or `--send` / `--print`, uploads using the printer's LAN mode. Experimental. It only uploads unless told to start.
