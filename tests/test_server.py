@@ -151,6 +151,7 @@ def test_multi_colour_3mf_keeps_objects_parts_and_toolheads(fake_env, colour_3mf
     assert any("toolhead 3 (#C89B3C)" in w for w in result["plan"]["warnings"])
     assert any("Dry the spool" in w for w in result["plan"]["warnings"])          # PETG's warning carried over
     assert settings["support_top_z_distance"] == "0.25"                           # and PETG's wider gap above supports
+    assert not any("bed will run" in w for w in result["plan"]["warnings"])       # this fixture's presets share one bed temperature
     with zipfile.ZipFile(result["project_3mf"]) as archive:
         config = archive.read("Metadata/model_settings.config").decode()
         model_xml = archive.read("3D/3dmodel.model").decode()
@@ -160,6 +161,24 @@ def test_multi_colour_3mf_keeps_objects_parts_and_toolheads(fake_env, colour_3mf
     assert model_xml.count("<item objectid") == 4 and model_xml.count("<component ") == 3
     assert 'paint_color="8"' in model_xml
     assert result["settings_mismatched"] == []
+
+
+def test_filaments_wanting_different_bed_temperatures_are_flagged(fake_env, colour_3mf):
+    # Toolhead 2's spool asks for an 85 C bed; toolheads 1 and 3 are at the preset's 65 C.
+    server.save_spool("hot petg", "PETG", bed_temp=85)
+    result = server.slice_model(str(colour_3mf), "PLA", other_filaments=["hot petg"])
+    warning = next(w for w in result["plan"]["warnings"] if "bed will run" in w)
+    assert "85 C" in warning and "65, 85, 65 C by toolhead" in warning and "toolhead 1 and 3" in warning
+    assert not any("bed will run" in w for w in server.slice_model(str(colour_3mf), "PLA")["plan"]["warnings"])
+
+
+def test_check_setup_says_which_code_is_running(fake_env, monkeypatch):
+    report = server.check_setup()
+    assert report["server_version"] == "0.2.0" and report["restart_needed"] is False
+    assert report["code_revision"] == server._STARTED_AT_REVISION
+    # The code on disk moved on after the server started.
+    monkeypatch.setattr(server, "_code_revision", lambda: "abc1234")
+    assert server.check_setup()["restart_needed"] is True
 
 
 def test_too_many_filaments_and_orienting_several_parts(fake_env, colour_3mf, cube_stl):

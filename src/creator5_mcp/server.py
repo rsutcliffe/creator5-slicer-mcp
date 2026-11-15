@@ -38,6 +38,28 @@ _ERRORS = (ConfigError, profiles.ProfileError, model.ModelError, recommend.Recom
            slicer.SliceError, project.ProjectError, results.ResultError)
 
 
+def _code_revision() -> str | None:
+    """The git commit this server is running from, when it runs from a checkout.
+
+    The server keeps its code in memory until the client restarts, so this shows whether a
+    restart picked up the latest pull.
+    """
+    try:
+        folder = Path(__file__).resolve().parent
+        commit = subprocess.run(["git", "-C", str(folder), "rev-parse", "--short", "HEAD"],
+                                capture_output=True, text=True, timeout=5)
+        if commit.returncode != 0:
+            return None
+        dirty = subprocess.run(["git", "-C", str(folder), "status", "--porcelain", "--untracked-files=no"],
+                               capture_output=True, text=True, timeout=5).stdout.strip()
+        return commit.stdout.strip() + (" with uncommitted changes" if dirty else "")
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+_STARTED_AT_REVISION = _code_revision()
+
+
 def _fail(exc: Exception) -> dict:
     return {"ok": False, "error": str(exc)}
 
@@ -48,11 +70,16 @@ def _path(value: str) -> Path:
 
 @mcp.tool()
 def check_setup() -> dict:
-    """Report whether the slicer and its Creator 5 presets are ready."""
+    """Report whether the slicer and its Creator 5 presets are ready, and which code this server is running.
+
+    restart_needed is true when the code on disk has changed since this server started.
+    """
     settings = load_settings()
     report: dict = {
         "ok": settings.slicer_path is not None and settings.profiles_dir is not None,
         "server_version": __version__,
+        "code_revision": _STARTED_AT_REVISION,
+        "restart_needed": _STARTED_AT_REVISION != _code_revision(),
         "slicer_path": str(settings.slicer_path) if settings.slicer_path else None,
         "profiles_dir": str(settings.profiles_dir) if settings.profiles_dir else None,
         "output_dir": str(settings.output_dir),
@@ -409,6 +436,14 @@ def slice_model(
             plan["warnings"].append(
                 "These override keys are not in the base preset and may be misspelt: "
                 + ", ".join(made["unknown_override_keys"]))
+        # One bed, one temperature: the slicer heats it to the highest any toolhead asks for.
+        beds = [float(v) for v in made["settings"].get("textured_plate_temp", [])]
+        if beds and max(beds) - min(beds) >= 10:
+            cool = [str(i + 1) for i, v in enumerate(beds) if max(beds) - v >= 10]
+            plan["warnings"].append(
+                f"The bed will run at {max(beds):g} C, the highest any toolhead asks for ({', '.join(f'{v:g}' for v in beds)} C by toolhead). "
+                f"That is too hot for the filament in toolhead {' and '.join(cool)}, which may soften and lose its shape near the bed. "
+                "Use filaments that want a similar bed temperature, or pass bed_temp to choose one.")
         # The setting says what was asked for; the G-code says what will print.
         supports_printed = slicer.support_sections(Path(result["gcode"]))
         supports_on = made["settings"].get("enable_support") == "1"

@@ -79,7 +79,7 @@ python3 -m venv .venv
 
 | Tool | What it does |
 |---|---|
-| `check_setup` | Confirms the slicer and the Creator 5 presets are in place |
+| `check_setup` | Confirms the slicer and the Creator 5 presets are in place, and reports the server's version, the git commit it started from, and whether the code has changed since (`restart_needed`) |
 | `list_filaments` | Lists the filament types understood, the presets installed and the saved spools |
 | `save_spool` | Remembers a spool and its label figures under a name |
 | `record_print_result` | Records how a print came out, with its settings and anything changed by hand |
@@ -171,6 +171,7 @@ This server never sends anything to the printer. Flash Studio's own Print button
 - From a 3MF with several plates, only plate 1 is used.
 - `auto_orient` works on single-part models only. Turning a model of several parts would merge them.
 - Every toolhead shares one process. Where two materials want different process settings, the slower speed wins.
+- Every toolhead shares one bed. The slicer heats it to the highest temperature any filament asks for; when filaments differ by 10 C or more, a warning says which toolhead that is too hot for.
 - The recommended values are reasoned starting points, not measured optima. See [docs/SETTINGS.md](docs/SETTINGS.md).
 
 ## Development

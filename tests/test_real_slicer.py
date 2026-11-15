@@ -70,6 +70,9 @@ def test_each_toolhead_keeps_its_own_filament_settings(real_env, colour_3mf):
     assert result["settings_mismatched"] == [], result["settings_mismatched"]
     gcode = Path(result["gcode"]).read_text(errors="ignore")
     assert "; nozzle_temperature = 215,210,255" in gcode
+    # The real presets differ in bed temperature, the slicer heats to the highest, and the plan says so.
+    assert "M140 S85" in gcode and "M140 S60" not in gcode
+    assert any("bed will run at 85 C" in w for w in result["plan"]["warnings"])
     assert "; filament_max_volumetric_speed = 6.7," in gcode and "; filament_max_volumetric_speed = 6.7,6.7" not in gcode
 
 
