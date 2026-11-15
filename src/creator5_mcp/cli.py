@@ -19,7 +19,7 @@ def _words(parts: list[str]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="creator5_mcp.cli", description="Slice a model for the Flashforge Creator 5.")
-    parser.add_argument("model", nargs="?", help="path to an STL, 3MF or OBJ file")
+    parser.add_argument("model", nargs="?", help="path to an STL, 3MF, OBJ or STEP file")
     parser.add_argument("--filament", nargs="+", default=["PLA"], help="toolhead 1: e.g. PLA, PETG, ender-pla, silk-pla, or a saved spool")
     parser.add_argument("--also", nargs="+", action="append", default=[], metavar="FILAMENT",
                         help="the filament in the next toolhead; repeat for toolheads 2, 3 and 4")

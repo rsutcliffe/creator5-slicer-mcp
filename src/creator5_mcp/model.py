@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import math
 import re
 import struct
+import subprocess
+import sys
+import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -13,7 +17,8 @@ from pathlib import Path
 import numpy as np
 
 BED_X = BED_Y = BED_Z = 256.0  # Creator 5 build volume in mm, from the Orca machine preset
-MESH_SUFFIXES = (".stl", ".obj", ".3mf")
+CAD_SUFFIXES = (".step", ".stp")
+MESH_SUFFIXES = (".stl", ".obj", ".3mf", *CAD_SUFFIXES)
 DEFAULT_SUPPORT_ANGLE = 30.0   # support_threshold_angle in every Creator 5 process preset
 
 _CORE = "{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}"
@@ -213,6 +218,32 @@ def _load_3mf(path: Path) -> dict:
     return {"objects": objects, "colours": colours, "filaments": filaments, "notes": notes}
 
 
+def convert_step(path: Path, out_dir: Path) -> Path:
+    """Mesh a STEP file into an OBJ in out_dir, in millimetres and the file's own orientation.
+
+    Neither Flash Studio's nor OrcaSlicer's command line reads STEP, so the optional `cascadio`
+    library (OpenCASCADE) does it. It runs in a separate process: the library prints to standard
+    output, which would corrupt the MCP connection if it ran inside the server.
+    """
+    if importlib.util.find_spec("cascadio") is None:
+        raise ModelError("STEP files need the optional converter. Install it with: pip install cascadio "
+                         "(or re-run scripts/setup.sh). Otherwise open the file in Flash Studio and export it as STL.")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{clean_name(path.stem)}.obj"
+    code = "import sys, cascadio; sys.exit(cascadio.step_to_obj(sys.argv[1], sys.argv[2], tol_linear=0.01, tol_angular=0.5, use_colors=False))"
+    try:
+        result = subprocess.run([sys.executable, "-c", code, str(path), str(out)], capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired as exc:
+        raise ModelError(f"Converting {path.name} took longer than 5 minutes and was stopped.") from exc
+    if result.returncode != 0 or not out.is_file() or not out.stat().st_size:
+        out.unlink(missing_ok=True)
+        if not any(out_dir.iterdir()):
+            out_dir.rmdir()      # do not leave an empty folder behind in the prints folder
+        detail = (result.stdout + result.stderr).strip().splitlines()
+        raise ModelError(f"{path.name} could not be read as a STEP file." + (f" {detail[-1].strip()}" if detail else ""))
+    return out
+
+
 def load_objects(path: Path) -> dict:
     """The model as objects and parts, in millimetres, oriented and placed as the file has them.
 
@@ -230,11 +261,13 @@ def load_objects(path: Path) -> dict:
         return loaded
     if suffix == ".stl":
         tris = _load_stl(path)
+    elif suffix in CAD_SUFFIXES:
+        with tempfile.TemporaryDirectory(prefix="creator5_step_") as folder:
+            tris = _load_obj(convert_step(path, Path(folder)))
     elif suffix == ".obj":
         tris = _load_obj(path)
     else:
-        raise ModelError(f"{path.suffix} files cannot be read here: the slicer's command line takes STL, OBJ and 3MF only. "
-                         "Open the file in Flash Studio and export it as STL, or ask its designer for a 3MF.")
+        raise ModelError(f"{path.suffix} files cannot be read here. Use STL, OBJ, 3MF or STEP.")
     name = clean_name(path.stem)
     return {"objects": [{"name": name, "parts": [{"name": name, "tris": tris, "extruder": None, "paint": None}]}],
             "colours": [], "filaments": 0, "notes": []}
@@ -285,7 +318,7 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE) -> dict:
         raise ModelError(f"Model not found: {path}")
     if path.suffix.lower() not in MESH_SUFFIXES:
         return {"file": str(path), "analysed": False,
-                "note": "Shape analysis covers STL, OBJ and 3MF."}
+                "note": "Shape analysis covers STL, OBJ, 3MF and STEP."}
     loaded = load_objects(path)
     tris, notes = np.concatenate([part["tris"] for obj in loaded["objects"] for part in obj["parts"]]), loaded["notes"]
     lo, hi = tris.reshape(-1, 3).min(axis=0), tris.reshape(-1, 3).max(axis=0)

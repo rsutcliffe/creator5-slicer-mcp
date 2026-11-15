@@ -159,7 +159,7 @@ def compare_with_saved_project(project_3mf: str, saved_project: str) -> dict:
 
 @mcp.tool()
 def analyse_model(model_path: str) -> dict:
-    """Measure an STL, OBJ or 3MF: size, volume, bed contact, overhangs, parts, toolheads used and bed fit.
+    """Measure an STL, OBJ, 3MF or STEP: size, volume, bed contact, overhangs, parts, toolheads used and bed fit.
 
     Args:
         model_path: Absolute path to the model file on this computer.
@@ -334,7 +334,7 @@ def slice_model(
     A multi-colour 3MF keeps its objects, parts and toolhead assignments.
 
     Args:
-        model_path: Absolute path to an STL, 3MF or OBJ file on this computer.
+        model_path: Absolute path to an STL, 3MF, OBJ or STEP file on this computer.
         filament: Filament in toolhead 1 as the user describes it, e.g. "black PLA", "PETG", "TPU 95A",
             or the name of a saved spool.
         quality: draft, standard, fine or best.
@@ -366,21 +366,30 @@ def slice_model(
         if copies < 1:
             raise project.ProjectError("copies must be at least 1")
         notes: list[str] = []
-        loaded = model.load_objects(source)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        converted = holding = None
+        if source.suffix.lower() in model.CAD_SUFFIXES:
+            # Converted once; everything after this works from the mesh. It moves into the job folder once that is named.
+            holding = settings.output_dir / f"{stamp}_converting"
+            converted = model.convert_step(source, holding)
+            notes.append("The STEP file was converted to a mesh (0.01 mm tolerance).")
+        loaded = model.load_objects(converted or source)
         # A downloaded file is often named by a hash; the name its designer gave the part reads better.
         title = loaded["objects"][0]["name"] if source.suffix.lower() == ".3mf" else source.stem
-        stamp = time.strftime("%Y%m%d_%H%M%S")
         name = re.sub(r"[^A-Za-z0-9._-]+", "_", job_name or title).strip("_") or "print"
         job_dir = settings.output_dir / f"{stamp}_{name}"
         job_dir.mkdir(parents=True, exist_ok=True)
+        if converted:
+            converted = converted.rename(job_dir / converted.name)
+            holding.rmdir()
 
         # Designer settings come from the original file; the shape from the file that will print.
-        shaped = source
+        shaped = converted or source
         several = len(loaded["objects"]) > 1 or len(loaded["objects"][0]["parts"]) > 1
         if auto_orient and several:
             notes.append("Orientation left as designed: turning a model of several parts would merge them into one.")
         elif auto_orient:
-            shaped = slicer.orient(settings, source, job_dir, name)
+            shaped = slicer.orient(settings, shaped, job_dir, name)
             notes.append("The slicer chose the orientation; the project and the G-code both use it.")
         plan, analysis = _plan(str(source), filament, quality, strength, nozzle, supports, brim, layer_height,
                                precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed, shape_path=shaped,

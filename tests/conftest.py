@@ -73,6 +73,60 @@ def box_triangles(sx: float, sy: float, sz: float, z0: float = 0.0) -> list:
     return [t for a, b, c, d in quads for t in ((v[a], v[b], v[c]), (v[a], v[c], v[d]))]
 
 
+def write_step_box(path: Path, sx: float, sy: float, sz: float) -> Path:
+    """A minimal AP214 STEP file holding one solid box, as a CAD program would export it."""
+    import itertools
+    count = [0]; lines = []
+    def e(text):
+        count[0] += 1; lines.append(f"#{count[0]}={text};"); return f"#{count[0]}"
+    pt = lambda p: e(f"CARTESIAN_POINT('',({p[0]:.4f},{p[1]:.4f},{p[2]:.4f}))")
+    dr = lambda d: e(f"DIRECTION('',({d[0]:.1f},{d[1]:.1f},{d[2]:.1f}))")
+    corners = {c: (c[0] * sx, c[1] * sy, c[2] * sz) for c in itertools.product((0, 1), repeat=3)}
+    vert = {c: e(f"VERTEX_POINT('',{pt(p)})") for c, p in corners.items()}
+    edges = {}
+    def edge(a, b):
+        key = (a, b) if a < b else (b, a)
+        if key not in edges:
+            d = tuple(float(key[1][i] - key[0][i]) for i in range(3))
+            vector = e(f"VECTOR('',{dr(d)},1.0)")
+            line = e(f"LINE('',{pt(corners[key[0]])},{vector})")
+            edges[key] = e(f"EDGE_CURVE('',{vert[key[0]]},{vert[key[1]]},{line},.T.)")
+        return edges[key], ".T." if (a, b) == key else ".F."
+    faces = []
+    for axis, side in itertools.product(range(3), (0, 1)):
+        u, v = [(1, 2), (2, 0), (0, 1)][axis]
+        def c(i, j):
+            t = [0, 0, 0]; t[axis] = side; t[u] = i; t[v] = j; return tuple(t)
+        loop = [c(0, 0), c(1, 0), c(1, 1), c(0, 1)]
+        if side == 0:
+            loop.reverse()
+        oriented = [e("ORIENTED_EDGE('',*,*,%s,%s)" % edge(loop[k], loop[(k + 1) % 4])) for k in range(4)]
+        edge_loop = e(f"EDGE_LOOP('',({','.join(oriented)}))")
+        bound = e(f"FACE_OUTER_BOUND('',{edge_loop},.T.)")
+        normal = [0.0, 0.0, 0.0]; normal[axis] = 1.0 if side else -1.0
+        ref = [0.0, 0.0, 0.0]; ref[u] = 1.0
+        placement = e(f"AXIS2_PLACEMENT_3D('',{pt(corners[c(0, 0)])},{dr(normal)},{dr(ref)})")
+        faces.append(e(f"ADVANCED_FACE('',({bound}),{e(f'PLANE({chr(39)}{chr(39)},{placement})')},.T.)"))
+    shell = e(f"CLOSED_SHELL('',({','.join(faces)}))")
+    solid = e(f"MANIFOLD_SOLID_BREP('box',{shell})")
+    app = e("APPLICATION_CONTEXT('automotive design')")
+    e(f"APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,{app})")
+    product = e(f"PRODUCT('box','box','',({e(f'PRODUCT_CONTEXT({chr(39)}{chr(39)},{app},{chr(39)}mechanical{chr(39)})')}))")
+    formation = e(f"PRODUCT_DEFINITION_FORMATION('','',{product})")
+    context = e(f"PRODUCT_DEFINITION_CONTEXT('part definition',{app},'design')")
+    shape = e(f"PRODUCT_DEFINITION_SHAPE('','',{e(f'PRODUCT_DEFINITION({chr(39)}design{chr(39)},{chr(39)}{chr(39)},{formation},{context})')})")
+    lu = e("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))")
+    au = e("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))")
+    su = e("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())")
+    unc = e(f"UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),{lu},'distance_accuracy_value','')")
+    ctx = e(f"(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT(({unc}))GLOBAL_UNIT_ASSIGNED_CONTEXT(({lu},{au},{su}))REPRESENTATION_CONTEXT('',''))")
+    origin = e(f"AXIS2_PLACEMENT_3D('',{pt((0, 0, 0))},{dr((0, 0, 1))},{dr((1, 0, 0))})")
+    e(f"SHAPE_DEFINITION_REPRESENTATION({shape},{e(f'ADVANCED_BREP_SHAPE_REPRESENTATION({chr(39)}{chr(39)},({origin},{solid}),{ctx})')})")
+    path.write_text("ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nFILE_NAME('box.step','2026-11-15T00:00:00',(''),(''),'','','');\n"
+                    "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n" + "\n".join(lines) + "\nENDSEC;\nEND-ISO-10303-21;\n")
+    return path
+
+
 @pytest.fixture
 def cube_stl(tmp_path: Path) -> Path:
     return _stl(tmp_path / "cube.stl", box_triangles(20, 20, 10))

@@ -84,7 +84,7 @@ python3 -m venv .venv
 | `save_spool` | Remembers a spool and its label figures under a name |
 | `record_print_result` | Records how a print came out, with its settings and anything changed by hand |
 | `compare_with_saved_project` | Shows what you changed in Flash Studio, against the project the server wrote |
-| `analyse_model` | Measures an STL, OBJ or 3MF: size, volume, bed contact, overhangs, parts, toolheads used, fit on the 256 mm bed |
+| `analyse_model` | Measures an STL, OBJ, 3MF or STEP: size, volume, bed contact, overhangs, parts, toolheads used, fit on the 256 mm bed |
 | `recommend_settings` | Returns the chosen presets and settings with reasons, without slicing |
 | `slice_model` | Analyses, chooses settings, writes the project, slices it, and confirms each setting reached the G-code |
 | `open_in_slicer` | Opens the project in a new Flash Studio window, ready for Slice and Print |
@@ -167,7 +167,7 @@ This server never sends anything to the printer. Flash Studio's own Print button
 
 ## Limits in this version
 
-- Models must be STL, OBJ or 3MF. Neither Flash Studio's nor OrcaSlicer's command line reads STEP; open a STEP file in Flash Studio and export it as STL.
+- Models can be STL, OBJ, 3MF or STEP. STEP needs the optional `cascadio` library (about 70 MB), which `scripts/setup.sh` installs; with `pip`, install `creator5-slicer-mcp[step]`. Without it, a STEP file gets a message saying how to add it.
 - From a 3MF with several plates, only plate 1 is used.
 - `auto_orient` works on single-part models only. Turning a model of several parts would merge them.
 - Every toolhead shares one process. Where two materials want different process settings, the slower speed wins.

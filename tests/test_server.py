@@ -76,11 +76,31 @@ def test_auto_orient_builds_project_and_gcode_from_one_oriented_file(fake_env, c
     assert result["model"]["file"] == str(job / "oriented" / "cube.stl")
 
 
-def test_step_file_is_refused_with_what_to_do(fake_env, tmp_path):
-    step = tmp_path / "bracket.step"
-    step.write_text("ISO-10303-21;")
-    error = server.slice_model(str(step), "PLA")["error"]
-    assert "STL, OBJ and 3MF only" in error and "export it as STL" in error
+def test_step_file_is_converted_once_and_sliced(fake_env, tmp_path):
+    import pytest
+    pytest.importorskip("cascadio")
+    from conftest import write_step_box
+    result = server.slice_model(str(write_step_box(tmp_path / "bracket.step", 40, 25, 12)), "PLA")
+    assert result["ok"], result
+    assert result["model"]["size_mm"] == [40.0, 25.0, 12.0] and result["model"]["volume_cm3"] == 12.0
+    assert result["objects"] == ["bracket"] and any("STEP" in n for n in result["notes"])
+    job = Path(result["job_dir"])
+    assert job.name.endswith("_bracket") and (job / "bracket.obj").is_file()
+    assert not list(job.parent.glob("*_converting"))
+    assert server.analyse_model(str(tmp_path / "bracket.step"))["size_mm"] == [40.0, 25.0, 12.0]
+
+
+def test_step_without_the_converter_or_with_a_bad_file_says_what_to_do(fake_env, tmp_path, monkeypatch):
+    import importlib.util
+    bad = tmp_path / "broken.step"
+    bad.write_text("not a step file")
+    if importlib.util.find_spec("cascadio") is not None:
+        assert "could not be read as a STEP file" in server.slice_model(str(bad), "PLA")["error"]
+        assert not list((fake_env / "out").glob("*_converting"))
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name == "cascadio" else real(name, *a))
+    error = server.slice_model(str(bad), "PLA")["error"]
+    assert "pip install cascadio" in error and "export it as STL" in error
 
 
 def test_spool_register_fills_in_the_label_and_colour(fake_env, cube_stl, capsys):

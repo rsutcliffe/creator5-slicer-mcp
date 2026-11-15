@@ -36,11 +36,13 @@ Proven on the owner's Mac:
 | The MCP protocol path, new code | A separate server process called over stdio by an MCP client: `check_setup`, `slice_model` with `other_filaments`, then `open_in_slicer`, against the real Flash Studio. The two-colour test piece sliced (11 min, 1.95 g and 1.72 g, 22 toolhead changes, 16 of 16 settings) and opened |
 | A two-colour project on screen | Owner's screenshot, 15 Nov: filaments 1 `* Generic PLA` and 2 `Flashforge PLA…`, each half in its colour on its toolhead, purge tower placed, Slice plate enabled |
 | Each toolhead keeps its own filament settings | Four-colour plate G-code: `nozzle_temperature = 215,210,210,230`, `filament_max_volumetric_speed = 6.7,18,18,12` |
+| STEP files | A generated STEP box converted by `cascadio`: exact size (40 x 25 x 12 mm, 12.0 cm³), then oriented and sliced by Flash Studio in `tests/test_real_slicer.py` |
 | Hand changes read back from a saved project | The owner's saved project against the one the server wrote: `enable_support` 0 to 1, model swapped, plus two purge tower values Flash Studio rewrote |
 
 Not yet proven:
 
 - The finished print. On 15 November the owner printed two of the downloaded PS5 holders. He imported the holder into the old project `DualSenseWallHolder_v1.3.3mf` (which kept its file name), added supports by hand in Flash Studio and cloned the part (60.3 g in the printer app). The printer app showed toolhead 1 at 215 C and the bed at 60 C, so the spool's label figures reached the machine. The result has not been assessed yet. The v1.3 hook designed in session 1 was never printed: two of them slice to 100.7 g, and Flash Studio generates no supports for it even with supports on. The server now turns supports on for the downloaded holder by itself (its designer saved them on, and it has 112 mm² of overhang), so the manual step is no longer needed.
+- STEP files with curved surfaces or from a real CAD program. Only a flat-faced box written by the test suite has been converted.
 - The MCP tools called by Claude itself. The server was driven over the MCP protocol by a test client, but Claude had not been restarted, so the model's own choice of tool arguments from one sentence is untested.
 - The corrected two-colour project on screen. The screenshot was of the project written before the `filament_self_index` fix.
 - The MCP tools called from Claude Desktop or Claude Code. The running MCP server loads the main checkout's code, so restart Claude after merging to pick up session 2.
@@ -73,7 +75,7 @@ Each of these cost a round trip through the owner. Do not relearn them.
 9. **`--orient 1 --export-stl` works headless**, unlike `--export-3mf`. Use it to orient once and build both the project and the G-code from the result.
 10. **The import dialog only appears when the plate is not empty.** `project_load_behaviour` defaults to `ask_when_relevant`, and `Plater::open_3mf_file` asks only when `model().objects` is non-empty. With `single_instance: false`, `open -n` gives a fresh, empty window, so there is no dialog and an open project is never replaced.
 11. **Overhang as a share of the surface misses real overhangs.** 112 mm² on the PS5 holder was 0.6%, below the old 1% rule. Use area.
-12. **Neither slicer's command line reads STEP.** Flash Studio and OrcaSlicer 2.5 both answer "Unknown file format. Input file must have .stl, .obj, .amf(.xml) extension"; only their windows import STEP. Supporting it needs a converter library, which is the owner's call.
+12. **Neither slicer's command line reads STEP.** Flash Studio and OrcaSlicer 2.5 both answer "Unknown file format. Input file must have .stl, .obj, .amf(.xml) extension"; only their windows import STEP. The optional `cascadio` library (OpenCASCADE, about 70 MB) converts STEP to OBJ, and the server then works from the mesh. It is run in a separate process, because it prints to standard output and would corrupt the MCP connection inside the server.
 13. **Names and toolheads live in `Metadata/model_settings.config`.** `_BBS_3MF_Importer` matches each `<part id>` to the object id of a component, and reads `name` and `extruder` metadata from the object and each part. Write every object as a parent with components, even a single part. The G-code's `EXCLUDE_OBJECT_DEFINE NAME=` lines show the names Flash Studio loaded, so this can be checked without the window.
 14. **Filament settings are one value per toolhead.** With N filaments, `filament_settings_id`, `filament_colour` and every filament key have N entries, and `different_settings_to_system` and `inherits_group` have N + 2 (process, each filament, printer).
 15. **`filament used [g]` in the G-code is per toolhead.** Sum it for the total.
@@ -86,6 +88,7 @@ Each of these cost a round trip through the owner. Do not relearn them.
 22. **A gap in a per-toolhead list makes the slicer drop every setting, silently.** PLA with PETG: one preset defines `textured_cool_plate_temp`, the other does not; the list held a null; the slicer logged `load_from_json … invalid json array`, exited 0 and sliced with its defaults. Fill gaps from a preset that has the key, and treat that log line as a failed slice.
 23. **The purge tower values are not ours to change.** The Creator 5 preset itself says `165%` and `rib`; the saved single-filament project had `100%` and `rectangle` with the tower off. Flash Studio's public source does not contain these keys (the app is newer than the repo), so the reason is unknown. Left as the preset has them.
 24. **A flow cap from the label's speed halves at half the layer height.** Use a proven `max_flow` per spool.
+25. **With an OBJ input the slicer's command line does not create its `--outputdir`** and aborts on `create_directory`, which raises a macOS "Flash Studio quit unexpectedly" dialog. Create the folder first. Any abort of the headless slicer shows that dialog to the owner, so test new command lines sparingly.
 5. **Speed is best limited through `filament_max_volumetric_speed`**, not individual speed settings. It covers every move.
 6. **Curly quotes.** Two commands failed because the chat app changed `"` to typographic quotes. The terminal command takes hyphenated words (`--filament ender-pla`) for this reason.
 
@@ -108,7 +111,6 @@ Done in session 2: the MCP path writes and opens the project without prompting (
 2. **Print the two-colour test piece**: `~/Creator5Prints/20261115_195640_Two_colour_test/Two_colour_test.3mf` (black Ender PLA and the blue PLA in toolhead 2). Then the four-colour plate, `~/Creator5Prints/20261115_195659_Skeleton/Skeleton.3mf`.
 3. **Run a flow test on the black PLA** (Flash Studio's Calibration menu) and save the result as the spool's `max_flow`. It is 6.7 mm³/s now, from one good print. The blue, teal and magenta PLA in toolheads 2 to 4 have no label figures saved yet.
 3a. **After restarting Claude, try one sentence** and check the tool arguments it chooses.
-4. **STEP files.** Not supported (section 3, item 12). Ask the owner whether to add a converter library.
 5. **OrcaSlicer 2.5 `.opc` presets.** Only worth reading if the owner moves off Flash Studio.
 
 ## 6. The hook, for reference

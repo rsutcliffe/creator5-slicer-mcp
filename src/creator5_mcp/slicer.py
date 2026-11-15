@@ -104,6 +104,7 @@ def orient(settings: Settings, model: Path, job_dir: Path, name: str = "model", 
     (The command line reads STL, OBJ and 3MF only; it cannot convert STEP.)
     """
     out = job_dir / "oriented"
+    out.mkdir(parents=True, exist_ok=True)   # with an OBJ input the slicer does not create it, and aborts
     result = _run(settings, ["--orient", "1", "--arrange", "0", "--export-stl", "--outputdir", str(out), str(model)],
                   job_dir, "orient.log", timeout)
     stls = sorted(out.rglob("*.stl")) if out.is_dir() else []

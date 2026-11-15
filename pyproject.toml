@@ -13,6 +13,7 @@ dependencies = ["mcp>=1.2", "numpy>=1.24"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+step = ["cascadio>=0.1.1"]   # reads STEP files; about 70 MB, so optional
 
 [project.scripts]
 creator5-slicer-mcp = "creator5_mcp.server:main"

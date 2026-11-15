@@ -71,3 +71,15 @@ def test_each_toolhead_keeps_its_own_filament_settings(real_env, colour_3mf):
     gcode = Path(result["gcode"]).read_text(errors="ignore")
     assert "; nozzle_temperature = 215,210,255" in gcode
     assert "; filament_max_volumetric_speed = 6.7," in gcode and "; filament_max_volumetric_speed = 6.7,6.7" not in gcode
+
+
+def test_step_file_is_meshed_then_oriented_and_sliced_by_flash_studio(real_env):
+    pytest.importorskip("cascadio")
+    from conftest import write_step_box
+    from creator5_mcp import server
+    # Stood on its smallest face: Flash Studio's orienter should lay it flat.
+    result = server.slice_model(str(write_step_box(real_env / "plate.step", 12, 40, 60)), "PLA", auto_orient=True)
+    assert result["ok"], result
+    assert result["exit_code"] == 0 and result["settings_mismatched"] == []
+    assert sorted(result["model"]["size_mm"]) == [12.0, 40.0, 60.0] and result["model"]["size_mm"][2] == 12.0
+    assert "EXCLUDE_OBJECT_DEFINE NAME=plate" in Path(result["gcode"]).read_text(errors="ignore")
