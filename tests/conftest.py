@@ -32,8 +32,13 @@ def profiles_dir(tmp_path: Path) -> Path:
         _write(ff / "process", {"type": "process", "name": f"{height}mm Standard @FF C5", "inherits": "fdm_process_common",
                                 "instantiation": "true", "layer_height": height.rstrip("0") if height != "0.20" else "0.2",
                                 "compatible_printers": ["Flashforge Creator 5 0.4 nozzle"]})
-    _write(lib / "filament", {"type": "filament", "name": "Generic PLA @System", "filament_type": ["PLA"],
-                              "nozzle_temperature": ["220"], "filament_density": ["1.24"], "hot_plate_temp": ["60"]})
+    # The same parent name exists in both vendor folders with different contents, as in Flash Studio.
+    _write(lib / "filament" / "base", {"type": "filament", "name": "fdm_filament_common", "filament_diameter": ["1.75"],
+                                       "filament_density": ["1.24"]})
+    _write(ff / "filament", {"type": "filament", "name": "fdm_filament_common", "filament_diameter": ["2.85"],
+                             "filament_density": ["9.99"]})
+    _write(lib / "filament", {"type": "filament", "name": "Generic PLA @System", "inherits": "fdm_filament_common",
+                              "filament_type": ["PLA"], "nozzle_temperature": ["220"], "hot_plate_temp": ["60"]})
     for name, kind, temp in (("Flashforge PLA Basic", "PLA", "210"), ("Flashforge PETG Pro", "PETG", "255"),
                              ("Flashforge ABS Basic", "ABS", "270"), ("Flashforge TPU-95A", "TPU-95A", "230"),
                              ("Flashforge PLA Silk", "PLA", "230")):
@@ -88,11 +93,15 @@ process = json.loads(Path(settings[1]).read_text())
 if process.get("wall_loops") == "99":
     sys.stderr.write("simulated failure\n"); sys.exit(3)
 out.mkdir(parents=True, exist_ok=True)
-(out / "plate_1.gcode").write_text(
-    "; HEADER_BLOCK_START\n; total estimated time: 1h 23m 45s\n; total layer number: 180\n; HEADER_BLOCK_END\nG1 X0\n"
-    "; filament used [mm] = 5000.5\n; filament used [g] = 15.25\n")
-(out / args[args.index("--export-3mf") + 1]).write_text("3mf")
+body = ("; HEADER_BLOCK_START\n; total estimated time: 1h 23m 45s\n; total layer number: 180\n; HEADER_BLOCK_END\nG1 X0\n"
+        "; filament used [mm] = 5000.5\n; filament used [g] = 15.25\n")
+if process.get("wall_loops") == "98":          # killed part-way through writing
+    (out / "plate_1.gcode").write_text(body[:60]); sys.exit(-11)
+(out / "plate_1.gcode").write_text(body + ";end_gcode\n; EXECUTABLE_BLOCK_END\n")
 (out / "argv.json").write_text(json.dumps(args))
+if process.get("wall_loops") == "97":          # finishes the file, then crashes on the way out
+    import os, signal
+    os.kill(os.getpid(), signal.SIGSEGV)
 '''
 
 

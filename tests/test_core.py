@@ -10,6 +10,8 @@ def test_flatten_merges_chain_across_vendors(profiles_dir):
     flat = profiles.flatten(profiles_dir, "filament", "Flashforge PLA Basic @FF C5")
     assert flat["nozzle_temperature"] == ["210"]       # child wins
     assert flat["filament_density"] == ["1.24"]        # inherited from the shared library
+    # The library preset's parent comes from the library, not the same-named Flashforge file.
+    assert flat["filament_diameter"] == ["1.75"]
     assert "inherits" not in flat and flat["from"] == "system"
 
 
@@ -129,6 +131,7 @@ def test_every_material_resolves_against_real_profiles(real_profiles):
             assert plan["machine_preset"] in process["compatible_printers"]
             assert plan["machine_preset"] in filament["compatible_printers"]
             assert plan["process_overrides"]["sparse_infill_pattern"] in valid_patterns
+            assert filament["filament_diameter"] == ["1.75"] * len(filament["filament_diameter"]), plan["filament_preset"]
             # Every key we set must already exist in the real base preset, apart from the one known addition.
             _, unknown = profiles.apply_overrides(process, plan["process_overrides"])
             assert set(unknown) <= {"wall_sequence"}, unknown

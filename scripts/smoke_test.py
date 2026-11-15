@@ -39,7 +39,7 @@ def main() -> int:
         print("\nSLICE FAILED\n" + result["error"])
         return 1
     print("\nSLICE OK (file only; nothing was sent to the printer)")
-    print(json.dumps({k: result[k] for k in ("gcode", "project_3mf", "summary", "exit_code", "log")}, indent=2))
+    print(json.dumps({k: result[k] for k in ("gcode", "gcode_complete", "summary", "exit_code", "notes", "log")}, indent=2))
     if not result["summary"]:
         print("\nNote: the G-code was written but its time and filament comments were not recognised. "
               "Please open an issue with the first 40 lines of the G-code.")

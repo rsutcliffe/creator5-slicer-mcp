@@ -23,8 +23,15 @@ class ProfileError(RuntimeError):
 
 
 @lru_cache(maxsize=4)
-def _index(profiles_dir: str) -> dict[tuple[str, str], dict]:
-    index: dict[tuple[str, str], dict] = {}
+def _index(profiles_dir: str) -> dict[tuple[str, str, str], dict]:
+    """Every preset, keyed by (kind, vendor, name).
+
+    The vendor is part of the key because the same name can exist in two
+    vendor folders with different contents. Flash Studio, for example, has an
+    old `fdm_filament_common` under Flashforge (2.85 mm filament) and the
+    current one under OrcaFilamentLibrary (1.75 mm).
+    """
+    index: dict[tuple[str, str, str], dict] = {}
     for vendor in VENDORS:
         for kind in KINDS:
             folder = Path(profiles_dir) / vendor / kind
@@ -36,27 +43,52 @@ def _index(profiles_dir: str) -> dict[tuple[str, str], dict]:
                 except (OSError, ValueError):
                     continue
                 name = data.get("name") if isinstance(data, dict) else None
-                # Flashforge wins over the shared library on a name clash.
-                if name and (kind, name) not in index:
-                    index[(kind, name)] = data
+                if name and (kind, vendor, name) not in index:
+                    index[(kind, vendor, name)] = data
     if not index:
         raise ProfileError(f"No presets found under {profiles_dir}")
     return index
 
 
+def _lookup(index: dict, kind: str, name: str, prefer: str) -> tuple[str, dict] | None:
+    for vendor in (prefer, *[v for v in VENDORS if v != prefer]):
+        data = index.get((kind, vendor, name))
+        if data is not None:
+            return vendor, data
+    return None
+
+
+def _presets(profiles_dir: Path, kind: str) -> dict[str, dict]:
+    """Presets of one kind as the user sees them: Flashforge first, then the shared library."""
+    out: dict[str, dict] = {}
+    for vendor in VENDORS:
+        for (k, v, name), data in _index(str(profiles_dir)).items():
+            if k == kind and v == vendor:
+                out.setdefault(name, data)
+    return out
+
+
 def flatten(profiles_dir: Path, kind: str, name: str) -> dict:
-    """Return preset `name` with every inherited value merged in."""
+    """Return preset `name` with every inherited value merged in.
+
+    A parent is looked for in the same vendor folder as the preset that names
+    it, and only then in the other folder. This is how the slicer resolves
+    inheritance, and it keeps a preset in the shared filament library from
+    picking up a same-named but different parent in the Flashforge folder.
+    """
     index = _index(str(profiles_dir))
     chain: list[dict] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     current: str | None = name
+    vendor = VENDORS[0]
     while current:
-        if current in seen:
-            raise ProfileError(f"Circular inheritance at {kind} preset '{current}'")
-        seen.add(current)
-        data = index.get((kind, current))
-        if data is None:
+        found = _lookup(index, kind, current, vendor)
+        if found is None:
             raise ProfileError(f"{kind} preset '{current}' not found (needed by '{name}')")
+        vendor, data = found
+        if (vendor, current) in seen:
+            raise ProfileError(f"Circular inheritance at {kind} preset '{current}'")
+        seen.add((vendor, current))
         chain.append(data)
         current = data.get("inherits") or None
     merged: dict = {}
@@ -83,8 +115,8 @@ def process_presets(profiles_dir: Path, nozzle: str, pro: bool = False) -> dict[
     """Map layer height (mm) to preset name for one nozzle size."""
     machine = machine_name(nozzle, pro)
     out: dict[float, str] = {}
-    for (kind, name), data in _index(str(profiles_dir)).items():
-        if kind != "process" or data.get("instantiation") != "true" or _suffix(pro) not in name:
+    for name, data in _presets(profiles_dir, "process").items():
+        if data.get("instantiation") != "true" or _suffix(pro) not in name:
             continue
         if pro is False and "@FF C5P" in name:
             continue
@@ -103,8 +135,8 @@ def filament_presets(profiles_dir: Path, nozzle: str, pro: bool = False) -> dict
     machine = machine_name(nozzle, pro)
     suffix = _suffix(pro)
     out: dict[str, dict] = {}
-    for (kind, name), data in _index(str(profiles_dir)).items():
-        if kind != "filament" or data.get("instantiation") != "true" or not name.endswith(suffix):
+    for name, data in _presets(profiles_dir, "filament").items():
+        if data.get("instantiation") != "true" or not name.endswith(suffix):
             continue
         flat = flatten(profiles_dir, "filament", name)
         compatible = flat.get("compatible_printers") or []
@@ -116,6 +148,7 @@ def filament_presets(profiles_dir: Path, nozzle: str, pro: bool = False) -> dict
             "bed_temperature": _first(flat.get("hot_plate_temp")),
             "max_volumetric_speed": _first(flat.get("filament_max_volumetric_speed")),
             "density": _first(flat.get("filament_density")),
+            "diameter": _first(flat.get("filament_diameter")),
         }
     return dict(sorted(out.items()))
 

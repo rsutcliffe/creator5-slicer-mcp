@@ -171,7 +171,7 @@ def slice_model(
 ) -> dict:
     """Slice a model for the Creator 5 with settings chosen for the filament and purpose.
 
-    Returns the G-code path, a 3MF project to open in the slicer, print time, filament use,
+    Returns the G-code path, print time, filament use,
     the settings applied with reasons, and any warnings to pass on to the user.
 
     Args:

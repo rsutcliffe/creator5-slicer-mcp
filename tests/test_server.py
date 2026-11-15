@@ -14,7 +14,8 @@ def test_slice_model_end_to_end_with_fake_slicer(fake_env, cube_stl):
     assert result["summary"] == {"print_time_seconds": 5025, "print_time": "1h 23m", "filament_used_g": 15.25,
                                  "filament_used_mm": 5000.5, "layers": 180}
     job = Path(result["job_dir"])
-    assert job.name.endswith("_My_Part") and Path(result["gcode"]).is_file() and Path(result["project_3mf"]).is_file()
+    assert job.name.endswith("_My_Part") and Path(result["gcode"]).is_file()
+    assert result["gcode_complete"] and result["exit_code"] == 0 and result["notes"] == []
     # The slicer received flattened presets carrying the recommended values.
     process = json.loads(Path(result["presets_written"]["process"]).read_text())
     assert process["wall_loops"] == "4" and process["sparse_infill_density"] == "25%" and "inherits" not in process
@@ -22,6 +23,8 @@ def test_slice_model_end_to_end_with_fake_slicer(fake_env, cube_stl):
     assert filament["filament_density"] == ["1.24"]
     argv = json.loads((job / "argv.json").read_text())
     assert argv.count(str(cube_stl)) == 2 and argv[argv.index("--orient") + 1] == "0"
+    assert "--export-3mf" not in argv
+    assert filament["filament_diameter"] == ["1.75"]
 
 
 def test_overrides_apply_last_and_unknown_keys_are_flagged(fake_env, cube_stl):
@@ -37,6 +40,22 @@ def test_overrides_apply_last_and_unknown_keys_are_flagged(fake_env, cube_stl):
 def test_slicer_failure_is_reported_not_raised(fake_env, cube_stl):
     result = server.slice_model(str(cube_stl), "PLA", process_overrides={"wall_loops": 99})
     assert not result["ok"] and "simulated failure" in result["error"] and "code 3" in result["error"]
+
+
+def test_crash_after_complete_gcode_is_usable_but_noted(fake_env, cube_stl):
+    result = server.slice_model(str(cube_stl), "PLA", process_overrides={"wall_loops": 97})
+    assert result["ok"] and result["gcode_complete"] and result["exit_code"] != 0
+    assert "complete" in result["notes"][0]
+
+
+def test_unfinished_gcode_is_rejected(fake_env, cube_stl):
+    result = server.slice_model(str(cube_stl), "PLA", process_overrides={"wall_loops": 98})
+    assert not result["ok"] and "unfinished" in result["error"] and "Do not print" in result["error"]
+
+
+def test_wrong_filament_diameter_is_refused(fake_env, cube_stl):
+    result = server.slice_model(str(cube_stl), "PLA", filament_overrides={"filament_diameter": 2.85})
+    assert not result["ok"] and "1.75" in result["error"]
 
 
 def test_missing_model_and_unknown_filament(fake_env, cube_stl):

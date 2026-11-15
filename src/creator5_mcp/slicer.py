@@ -15,6 +15,25 @@ class SliceError(RuntimeError):
     pass
 
 
+FILAMENT_DIAMETER = 1.75  # mm
+_END_MARKERS = ("; EXECUTABLE_BLOCK_END", ";end_gcode", "; CONFIG_BLOCK_END", "; filament used [g]")
+
+
+def gcode_is_complete(path: Path) -> bool:
+    """True when the G-code file was written through to its end.
+
+    Some slicer builds finish the G-code and then crash while shutting down,
+    so the exit code alone cannot say whether the file is usable.
+    """
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        head = handle.read(200_000)
+        handle.seek(max(0, size - 200_000))
+        tail = handle.read()
+    text = (head + tail).decode("utf-8", "ignore")
+    return _END_MARKERS[0] in tail.decode("utf-8", "ignore") or all(m in text for m in _END_MARKERS[1:])
+
+
 _TIME = re.compile(r";\s*(?:total estimated time|estimated printing time \(normal mode\))\s*[:=]\s*([0-9dhms ]+)", re.I)
 _FIELDS = {
     "filament_used_g": re.compile(r";\s*(?:total )?filament used \[g\]\s*[:=]\s*([0-9.]+)", re.I),
@@ -98,11 +117,20 @@ def slice_model(
     filament, missing = profiles.apply_overrides(filament, extra_filament)
     unknown += missing
 
+    # The Creator 5 takes 1.75 mm filament. A different value means a preset was
+    # resolved wrongly, and printing it would badly under- or over-extrude.
+    diameters = filament.get("filament_diameter")
+    diameters = diameters if isinstance(diameters, list) else [diameters]
+    if any(d is None or abs(float(d) - FILAMENT_DIAMETER) > 0.01 for d in diameters):
+        raise SliceError(f"Refusing to slice: the filament preset resolves to a diameter of {diameters} mm, "
+                         f"but the Creator 5 uses {FILAMENT_DIAMETER} mm. Please report this.")
+
     machine_path = profiles.write_preset(machine, preset_dir / "machine.json")
     process_path = profiles.write_preset(process, preset_dir / "process.json")
     filament_path = profiles.write_preset(filament, preset_dir / "filament.json")
 
-    project = job_dir / f"{name}.3mf"
+    # No --export-3mf: it makes the slicer render thumbnails through OpenGL,
+    # which crashes when the slicer runs without a window (seen on macOS).
     args = [
         str(binary),
         "--load-settings", f"{machine_path};{process_path}",
@@ -111,7 +139,6 @@ def slice_model(
         "--arrange", "1",
         "--slice", "0",
         "--outputdir", str(job_dir),
-        "--export-3mf", project.name,
     ]
     args += [str(model)] * copies
     try:
@@ -123,15 +150,24 @@ def slice_model(
         encoding="utf-8")
 
     gcodes = sorted(job_dir.rglob("*.gcode"))
+    tail = (result.stderr or result.stdout).strip()[-1500:]
     if not gcodes:
-        tail = (result.stderr or result.stdout).strip()[-1500:]
         raise SliceError(f"Slicer exited with code {result.returncode} and wrote no G-code. Log: {job_dir / 'slicer.log'}\n{tail}")
+    complete = gcode_is_complete(gcodes[0])
+    if not complete:
+        raise SliceError(f"Slicer exited with code {result.returncode} and left the G-code unfinished. "
+                         f"Do not print it. Log: {job_dir / 'slicer.log'}\n{tail}")
+    notes = []
+    if result.returncode != 0:
+        notes.append(f"The slicer finished the G-code, then exited with code {result.returncode}. "
+                     "The file is complete; the log has the details.")
 
     return {
         "job_dir": str(job_dir),
         "gcode": str(gcodes[0]),
-        "project_3mf": str(project) if project.is_file() else None,
+        "gcode_complete": complete,
         "exit_code": result.returncode,
+        "notes": notes,
         "summary": parse_gcode_summary(gcodes[0]),
         "presets_written": {"machine": str(machine_path), "process": str(process_path), "filament": str(filament_path)},
         "settings_not_in_base_preset": unknown,

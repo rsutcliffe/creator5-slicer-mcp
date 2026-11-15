@@ -6,13 +6,13 @@ Say what the part is for and what filament is loaded. The server measures the mo
 
 It is a thin layer over the slicer's own command line. It is not a fork of OrcaSlicer, so there is no C++ to build and slicer updates need no merging.
 
-> **Status: early.** The settings logic and the server are covered by automated tests, including a check of every filament type against OrcaSlicer's real Creator 5 presets. Slicing against a real OrcaSlicer install and uploading to a real printer have not yet been confirmed. Run `scripts/smoke_test.py` after installing, and treat `send_to_printer` as experimental.
+> **Status: early.** The settings logic and the server are covered by automated tests, including a check of every filament type against real Creator 5 presets. Slicing has been confirmed with Flash Studio 1.7 on macOS. Printing the resulting G-code and uploading to a real printer have not yet been confirmed. Check the first few prints carefully, and treat `send_to_printer` as experimental.
 
 ## What you need
 
 - macOS, Windows or Linux
 - Python 3.10 or newer
-- [OrcaSlicer](https://github.com/OrcaSlicer/OrcaSlicer) with its Flashforge profiles, or Flashforge's own Flash Studio / Orca-Flashforge, which is built on OrcaSlicer and shares its command line
+- Flashforge's Flash Studio (formerly Orca-Flashforge), or an [OrcaSlicer](https://github.com/OrcaSlicer/OrcaSlicer) build whose Flashforge presets are plain JSON files. OrcaSlicer 2.5 packs its presets into `.opc` files, which this server cannot read; with both installed, Flash Studio is used
 - A Flashforge Creator 5 or Creator 5 Pro
 
 ## Install
@@ -78,7 +78,7 @@ python3 -m venv .venv
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `ORCA_SLICER_PATH` | Slicer executable | found automatically; on macOS `/Applications/OrcaSlicer.app`, then Flash Studio |
+| `ORCA_SLICER_PATH` | Slicer executable | found automatically: the first of OrcaSlicer, Flash Studio or Orca-Flashforge with readable presets |
 | `ORCA_PROFILES_DIR` | Folder containing `Flashforge/` and `OrcaFilamentLibrary/` | the slicer's bundled `profiles` folder |
 | `C5_OUTPUT_DIR` | Where jobs are written | `~/Creator5Prints` |
 | `C5_PRINTER_IP` | Printer address on your network | none |
@@ -93,7 +93,7 @@ python3 -m venv .venv
 | `list_filaments` | Lists the filament types understood and the presets installed |
 | `analyse_model` | Measures an STL: size, volume, bed contact, overhangs, fit on the 256 mm bed |
 | `recommend_settings` | Returns the chosen presets and settings with reasons, without slicing |
-| `slice_model` | Analyses, chooses settings, slices, and returns G-code, a 3MF project and estimates |
+| `slice_model` | Analyses, chooses settings, slices, and returns G-code with time and filament estimates |
 | `open_in_slicer` | Opens the result in the slicer window to inspect and print from there |
 | `printer_status` | Reads the printer's state over the local network (experimental) |
 | `send_to_printer` | Uploads a sliced file; starts the print only when asked (experimental) |
@@ -128,7 +128,7 @@ Output      ~/Creator5Prints/20261115_141500_controller_holder/plate_1.gcode
 
 Three routes, safest first:
 
-1. `open_in_slicer` opens the 3MF project in OrcaSlicer or Flash Studio. Look over the preview and print from there as usual.
+1. `open_in_slicer` opens the G-code in OrcaSlicer or Flash Studio. Look over the layer preview and print from there.
 2. Copy the `.gcode` to a USB stick.
 3. `send_to_printer` uploads over your network using the printer's LAN mode. It only uploads by default. Pass `start_print=true` once the bed is clear and the filament is loaded.
 
