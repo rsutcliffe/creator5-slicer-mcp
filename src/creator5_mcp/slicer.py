@@ -34,9 +34,10 @@ def gcode_is_complete(path: Path) -> bool:
 
 _TIME = re.compile(r";\s*(?:total estimated time|estimated printing time \(normal mode\))\s*[:=]\s*([0-9dhms ]+)", re.I)
 _FIELDS = {
-    "filament_used_g": re.compile(r";\s*(?:total )?filament used \[g\]\s*[:=]\s*([0-9.]+)", re.I),
-    "filament_used_mm": re.compile(r";\s*(?:total )?filament used \[mm\]\s*[:=]\s*([0-9.]+)", re.I),
-    "filament_used_cm3": re.compile(r";\s*(?:total )?filament used \[cm3\]\s*[:=]\s*([0-9.]+)", re.I),
+    # One value per toolhead, comma-separated; the summary reports their total.
+    "filament_used_g": re.compile(r";\s*(?:total )?filament used \[g\]\s*[:=]\s*([0-9., ]+)", re.I),
+    "filament_used_mm": re.compile(r";\s*(?:total )?filament used \[mm\]\s*[:=]\s*([0-9., ]+)", re.I),
+    "filament_used_cm3": re.compile(r";\s*(?:total )?filament used \[cm3\]\s*[:=]\s*([0-9., ]+)", re.I),
     "layers": re.compile(r";\s*total layer(?:s count| number)\s*[:=]\s*([0-9]+)", re.I),
 }
 
@@ -67,7 +68,10 @@ def parse_gcode_summary(path: Path) -> dict:
     for key, pattern in _FIELDS.items():
         match = pattern.search(text)
         if match:
-            out[key] = float(match.group(1)) if "." in match.group(1) else int(match.group(1))
+            values = [float(v) for v in match.group(1).split(",") if v.strip()]
+            out[key] = int(values[0]) if key == "layers" else round(sum(values), 2)
+            if key == "filament_used_g" and len(values) > 1:
+                out["filament_used_g_per_toolhead"] = values
     return out
 
 
@@ -93,10 +97,11 @@ def _run(settings: Settings, args: list[str], job_dir: Path, log_name: str, time
     return result
 
 
-def orient(settings: Settings, model: Path, job_dir: Path, timeout: int = 300) -> Path:
+def orient(settings: Settings, model: Path, job_dir: Path, name: str = "model", timeout: int = 300) -> Path:
     """Let the slicer turn the model to its best printing orientation, and return it as an STL.
 
     The project and the G-code are then built from this one file, so both use the same orientation.
+    (The command line reads STL, OBJ and 3MF only; it cannot convert STEP.)
     """
     out = job_dir / "oriented"
     result = _run(settings, ["--orient", "1", "--arrange", "0", "--export-stl", "--outputdir", str(out), str(model)],
@@ -105,7 +110,10 @@ def orient(settings: Settings, model: Path, job_dir: Path, timeout: int = 300) -
     if not stls:
         raise SliceError(f"The slicer could not orient the model (exit code {result.returncode}). "
                          f"Log: {job_dir / 'orient.log'}")
-    return stls[0]
+    target = out / f"{name}.stl"      # the slicer names it after its own object; ours is the job's name
+    if stls[0] != target:
+        stls[0].rename(target)
+    return target
 
 
 def slice_project(settings: Settings, project: Path, job_dir: Path, timeout: int = 900) -> dict:
@@ -140,14 +148,17 @@ def slice_project(settings: Settings, project: Path, job_dir: Path, timeout: int
 
 
 def _norm(value) -> str:
-    """First value of a setting, in a form that compares equal however it was written."""
-    if isinstance(value, list):
-        value = value[0] if value else ""
-    text = re.split(r"[;,]", str(value))[0].strip().strip('"')
-    try:
-        return f"{float(text.rstrip('%')):g}" + ("%" if text.endswith("%") else "")
-    except ValueError:
-        return text
+    """A setting's values, one per toolhead, in a form that compares equal however it was written."""
+    parts = value if isinstance(value, list) else re.split(r"[;,]", str(value))
+    out = []
+    for text in parts:
+        text = str(text).strip().strip('"')
+        try:
+            text = f"{float(text.rstrip('%')):g}" + ("%" if text.endswith("%") else "")
+        except ValueError:
+            pass
+        out.append(text)
+    return ",".join(out)
 
 
 def settings_in_gcode(gcode: Path) -> dict[str, str]:

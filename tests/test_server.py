@@ -4,8 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-from creator5_mcp import printer, server, slicer
-from creator5_mcp.config import load_settings
+from creator5_mcp import server
 
 
 def test_slice_model_end_to_end_with_fake_slicer(fake_env, cube_stl):
@@ -74,7 +73,70 @@ def test_auto_orient_builds_project_and_gcode_from_one_oriented_file(fake_env, c
     job = Path(result["job_dir"])
     orient_argv = json.loads((job / "oriented" / "argv.json").read_text())
     assert orient_argv[orient_argv.index("--orient") + 1] == "1" and "--export-stl" in orient_argv
-    assert result["model"]["file"] == str(job / "oriented" / "oriented.stl")
+    assert result["model"]["file"] == str(job / "oriented" / "cube.stl")
+
+
+def test_step_file_is_refused_with_what_to_do(fake_env, tmp_path):
+    step = tmp_path / "bracket.step"
+    step.write_text("ISO-10303-21;")
+    error = server.slice_model(str(step), "PLA")["error"]
+    assert "STL, OBJ and 3MF only" in error and "export it as STL" in error
+
+
+def test_spool_register_fills_in_the_label_and_colour(fake_env, cube_stl, capsys):
+    from creator5_mcp import cli
+    assert not server.save_spool("mystery", "unobtainium")["ok"]
+    assert cli.main(["--save-spool", "black-pla", "--filament", "ender-pla", "--nozzle-temp", "210",
+                     "--bed-temp", "55", "--max-speed", "60", "--colour", "black"]) == 0
+    assert server.list_filaments()["spools"]["black pla"]["filament"] == "ender pla"
+    result = server.slice_model(str(cube_stl), "the black PLA")
+    settings = _project_settings(result)
+    assert settings["nozzle_temperature"] == ["210"] and settings["hot_plate_temp"] == ["55"]
+    assert settings["filament_max_volumetric_speed"] == ["5"] and settings["filament_colour"] == ["#161616"]
+    assert settings["filament_settings_id"] == ["Generic PLA @FF C5"]
+    assert any("register" in r for r in result["plan"]["rationale"])
+    # A figure given with the request beats the register; other PLA is untouched.
+    assert _project_settings(server.slice_model(str(cube_stl), "black pla", nozzle_temp=200))["nozzle_temperature"] == ["200"]
+    assert _project_settings(server.slice_model(str(cube_stl), "white PLA"))["nozzle_temperature"] == ["210"]
+
+
+def test_multi_colour_3mf_keeps_objects_parts_and_toolheads(fake_env, colour_3mf):
+    import zipfile
+    result = server.slice_model(str(colour_3mf), "black PLA", other_filaments=["white PETG"], copies=2)
+    assert result["ok"], result
+    assert result["objects"] == ["Figure", "Plinth"] and result["model"]["filaments_needed"] == 3
+    settings = _project_settings(result)
+    # Three toolheads: two named, the third filled from toolhead 1 in the file's colour.
+    assert settings["filament_settings_id"] == ["Flashforge PLA Basic @FF C5", "Flashforge PETG Pro @FF C5", "Flashforge PLA Basic @FF C5"]
+    assert settings["filament_colour"] == ["#161616", "#F2F2F2", "#C89B3C"]
+    assert settings["nozzle_temperature"] == ["210", "255", "210"] and settings["filament_diameter"] == ["1.75"] * 3
+    assert settings["enable_prime_tower"] == "1" and len(settings["different_settings_to_system"]) == 5
+    assert settings["inherits_group"] == [""] * 5
+    assert any("toolhead 3 (#C89B3C)" in w for w in result["plan"]["warnings"])
+    assert any("Dry the spool" in w for w in result["plan"]["warnings"])          # PETG's warning carried over
+    assert settings["support_top_z_distance"] == "0.25"                           # and PETG's wider gap above supports
+    with zipfile.ZipFile(result["project_3mf"]) as archive:
+        config = archive.read("Metadata/model_settings.config").decode()
+        model_xml = archive.read("3D/3dmodel.model").decode()
+    assert config.count("<object ") == 2 and config.count("<part ") == 3
+    assert '<metadata key="name" value="Figure"/>' in config and '<metadata key="name" value="T2 White"/>' in config
+    assert [int(v) for v in __import__("re").findall(r'key="extruder" value="(\d)"', config)] == [1, 1, 2, 3, 3]
+    assert model_xml.count("<item objectid") == 4 and model_xml.count("<component ") == 3
+    assert 'paint_color="8"' in model_xml
+    assert result["settings_mismatched"] == []
+
+
+def test_too_many_filaments_and_orienting_several_parts(fake_env, colour_3mf, cube_stl):
+    assert "4 toolheads" in server.slice_model(str(cube_stl), "PLA", other_filaments=["PLA"] * 4)["error"]
+    result = server.slice_model(str(colour_3mf), "PLA", auto_orient=True)
+    assert result["ok"] and any("left as designed" in n for n in result["notes"])
+    assert not (Path(result["job_dir"]) / "oriented").exists()
+
+
+def test_job_and_object_take_the_designers_name_not_the_file_hash(fake_env, tmp_path):
+    from conftest import make_3mf, box_triangles
+    result = server.slice_model(str(make_3mf(tmp_path / "93b857fe1d3a.3mf", box_triangles(30, 20, 10))), "PLA")
+    assert result["objects"] == ["holder v3"] and Path(result["job_dir"]).name.endswith("_holder_v3")
 
 
 def _project_settings(result: dict) -> dict:
@@ -111,7 +173,7 @@ def test_missing_model_and_unknown_filament(fake_env, cube_stl):
 
 def test_check_setup_and_missing_slicer(fake_env, monkeypatch):
     report = server.check_setup()
-    assert report["ok"] and report["slicer_version"] == "FakeSlicer 9.9.9" and not report["printer_configured"]
+    assert report["ok"] and report["slicer_version"] == "FakeSlicer 9.9.9" and "printer_configured" not in report
     assert report["nozzles"]["0.4"] == ["0.12mm Standard @FF C5", "0.20mm Standard @FF C5", "0.24mm Standard @FF C5"]
     monkeypatch.setenv("ORCA_SLICER_PATH", "/nope/slicer")
     monkeypatch.setattr("creator5_mcp.config._candidates", lambda: [])
@@ -143,44 +205,6 @@ def test_slicer_with_readable_presets_beats_one_with_packed_presets(tmp_path, pr
     assert (settings.slicer_path, settings.profiles_dir) == (orca, profiles_dir)
 
 
-def test_printer_tools_need_credentials(fake_env, cube_stl):
-    assert "C5_PRINTER_IP" in server.printer_status()["error"]
-    assert "not configured" in server.send_to_printer(str(cube_stl))["error"]
-
-
-def test_upload_sends_expected_request(fake_env, tmp_path, monkeypatch):
-    import http.server, threading
-    seen = {}
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_POST(self):
-            seen["path"], seen["headers"] = self.path, dict(self.headers)
-            seen["body"] = self.rfile.read(int(self.headers["Content-Length"]))
-            payload = b'{"code":0,"message":"Success"}'
-            self.send_response(200); self.send_header("Content-Length", str(len(payload))); self.end_headers()
-            self.wfile.write(payload)
-
-        def log_message(self, *args):
-            pass
-
-    httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    monkeypatch.setattr(printer, "PORT", httpd.server_address[1])
-    monkeypatch.setenv("C5_PRINTER_IP", "127.0.0.1")
-    monkeypatch.setenv("C5_PRINTER_SERIAL", "SN123")
-    monkeypatch.setenv("C5_PRINTER_CHECK_CODE", "abcd")
-    gcode = tmp_path / "part one.gcode"
-    gcode.write_text("G1 X1\n")
-    try:
-        result = server.send_to_printer(str(gcode))
-    finally:
-        httpd.shutdown()
-    assert result["ok"] and result["print_started"] is False
-    assert seen["path"] == "/uploadGcode"
-    assert seen["headers"]["serialNumber"] == "SN123" and seen["headers"]["printNow"] == "false"
-    assert seen["headers"]["fileSize"] == "6" and b'filename="part_one.gcode"' in seen["body"] and b"G1 X1" in seen["body"]
-
-
 def test_tools_over_real_stdio_transport(fake_env, cube_stl):
     """Start the server as a subprocess and call it as an MCP client would."""
     from mcp import ClientSession, StdioServerParameters
@@ -198,7 +222,7 @@ def test_tools_over_real_stdio_transport(fake_env, cube_stl):
 
     names, payload = asyncio.run(run())
     assert names == {"check_setup", "list_filaments", "analyse_model", "recommend_settings", "slice_model",
-                     "open_in_slicer", "printer_status", "send_to_printer"}
+                     "open_in_slicer", "save_spool"}
     assert payload["ok"] and payload["summary"]["print_time"] == "1h 23m"
 
 
@@ -235,47 +259,8 @@ def test_cli_slices_without_needing_quotes(fake_env, cube_stl, capsys):
     assert cli.main([str(cube_stl), "--filament", "ender-pla", "--strength", "functional", "--copies", "2"]) == 0
     out = capsys.readouterr().out
     assert "Creality Ender PLA" in out and "wall_loops             4" in out and "nozzle_temperature     215" in out
-    assert "1h 23m" in out and "15.25 g" in out
+    assert "1h 23m" in out and "15.25 g" in out and "Sliced 2 x cube" in out
     assert cli.main(["/nope.stl", "--filament", "PLA"]) == 1 and "FAILED" in capsys.readouterr().out
     assert cli.main([str(cube_stl), "--smooth-top"]) == 0 and "ironing_type           top" in capsys.readouterr().out
 
 
-def test_cli_copies_gcode_and_reports_missing_usb(fake_env, cube_stl, tmp_path, capsys, monkeypatch):
-    from creator5_mcp import cli
-    dest = tmp_path / "stick"; dest.mkdir()
-    assert cli.main([str(cube_stl), "--copies", "2", "--copy-to", str(dest)]) == 0
-    assert (dest / "cube_x2.gcode").read_text().endswith("; EXECUTABLE_BLOCK_END\n")
-    monkeypatch.setattr(cli, "_usb_volumes", lambda: [])
-    assert cli.main([str(cube_stl), "--usb"]) == 1 and "No USB stick found" in capsys.readouterr().out
-    monkeypatch.setattr(cli, "_usb_volumes", lambda: [dest])
-    assert cli.main([str(cube_stl), "--usb"]) == 0 and (dest / "cube.gcode").is_file()
-
-
-def test_cli_saves_printer_and_sends(fake_env, cube_stl, capsys, monkeypatch):
-    """Printer details are saved once to a file, then used for uploads."""
-    import http.server, threading
-    from creator5_mcp import cli
-    seen = []
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_POST(self):
-            self.rfile.read(int(self.headers["Content-Length"]))
-            seen.append((self.path, self.headers.get("printNow"), self.headers.get("checkCode")))
-            payload = b'{"code":0,"detail":{"status":"ready"}}'
-            self.send_response(200); self.send_header("Content-Length", str(len(payload))); self.end_headers()
-            self.wfile.write(payload)
-
-        def log_message(self, *args):
-            pass
-
-    httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    monkeypatch.setattr(printer, "PORT", httpd.server_address[1])
-    try:
-        assert cli.main([str(cube_stl), "--send"]) == 1 and "not configured" in capsys.readouterr().out.lower()
-        assert cli.main(["--save-printer", "127.0.0.1", "SN9", "code9"]) == 0
-        assert cli.main([str(cube_stl), "--send"]) == 0
-        assert cli.main([str(cube_stl), "--print"]) == 0
-    finally:
-        httpd.shutdown()
-    assert seen == [("/detail", None, None), ("/uploadGcode", "false", "code9"), ("/uploadGcode", "true", "code9")]

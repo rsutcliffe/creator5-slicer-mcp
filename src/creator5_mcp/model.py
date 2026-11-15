@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import struct
 import xml.etree.ElementTree as ET
 import zipfile
@@ -75,8 +76,24 @@ def _apply(tris: np.ndarray, m: np.ndarray) -> np.ndarray:
     return tris @ m[:3] + m[3]
 
 
-def _load_3mf(path: Path) -> tuple[np.ndarray, list[str]]:
-    """Triangles of the parts on the first plate, placed as the designer left them.
+def clean_name(text: str) -> str:
+    """A part name without the file-type tail slicers add, e.g. 'holder v3.stl_1' -> 'holder v3'."""
+    return re.sub(r"\.(stl|3mf|obj|step|stp)(_\d+)?$", "", text.strip(), flags=re.I).strip()
+
+
+def _colour(text: str | None) -> str | None:
+    """'#RRGGBBAA' or '#RRGGBB' as '#RRGGBB'."""
+    return text[:7].upper() if text and re.fullmatch(r"#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", text) else None
+
+
+def _load_3mf(path: Path) -> dict:
+    """The objects on the first plate, placed as the designer left them.
+
+    Returns {"objects": [{"name", "parts": [{"name", "tris", "extruder", "paint"}]}],
+             "colours": [...], "filaments": n, "notes": [...]}.
+    extruder is the 1-based toolhead the file assigns the part to, or None. paint is the
+    per-triangle colour painting (Bambu/Orca `paint_color`), or None. colours are the
+    file's filament colours in toolhead order, when it records them.
 
     Follows the production extension (components kept in separate model files, as
     Bambu Studio and OrcaSlicer write them) and leaves out modifier, negative and
@@ -103,12 +120,20 @@ def _load_3mf(path: Path) -> tuple[np.ndarray, list[str]]:
                 trees[name] = ET.fromstring(archive.read(name))
             return trees[name]
 
-        # Bambu/Orca record part types and plates in model_settings.config.
+        # Bambu/Orca record part types, names, toolheads and plates in model_settings.config.
         skip: set[tuple[str, str]] = set()
+        cfg_name: dict[tuple[str, str | None], str] = {}
+        cfg_extruder: dict[tuple[str, str | None], int] = {}
         plate_objects: list[str] | None = None
         if "Metadata/model_settings.config" in names:
             cfg = ET.fromstring(archive.read("Metadata/model_settings.config"))
             for obj in cfg.findall("object"):
+                for owner, key in [(obj, (obj.get("id"), None))] + [(part, (obj.get("id"), part.get("id"))) for part in obj.findall("part")]:
+                    for meta in owner.findall("metadata"):
+                        if meta.get("key") == "name" and meta.get("value"):
+                            cfg_name[key] = meta.get("value")
+                        elif meta.get("key") == "extruder" and (meta.get("value") or "0").isdigit() and int(meta.get("value")) > 0:
+                            cfg_extruder[key] = int(meta.get("value"))
                 for part in obj.findall("part"):
                     if part.get("subtype", "normal_part") != "normal_part":
                         skip.add((obj.get("id"), part.get("id")))
@@ -122,57 +147,113 @@ def _load_3mf(path: Path) -> tuple[np.ndarray, list[str]]:
         root = tree(root_name)
         scale = _UNITS.get(root.get("unit", "millimeter"), 1.0)
 
-        def object_tris(file: str, oid: str, depth: int = 0) -> np.ndarray:
+        # Colours: a plain 3MF lists them as base materials; Bambu/Orca in the project settings.
+        materials: dict[str, list[str | None]] = {}
+        for group in root.iter(_CORE + "basematerials"):
+            materials[group.get("id")] = [_colour(base.get("displaycolor")) for base in group.findall(_CORE + "base")]
+        colours: list[str | None] = next(iter(materials.values()), [])
+        filaments = len(colours)
+        if "Metadata/project_settings.config" in names:
+            try:
+                saved = json.loads(archive.read("Metadata/project_settings.config")).get("filament_colour") or []
+                colours, filaments = [_colour(c) for c in saved], len(saved)
+            except ValueError:
+                pass
+
+        def parts_of(file: str, oid: str, top: str, inherited: int | None, depth: int = 0) -> list[dict]:
             if depth > 8:
                 raise ModelError(f"{path.name} nests components too deeply")
             obj = next((o for o in tree(file).iter(_CORE + "object") if o.get("id") == oid), None)
             if obj is None:
                 raise ModelError(f"{path.name}: object {oid} not found in {file}")
+            extruder = cfg_extruder.get((top, oid)) or inherited
+            if obj.get("pid") in materials and obj.get("pindex", "").isdigit():
+                extruder = extruder or int(obj.get("pindex")) + 1
             mesh = obj.find(_CORE + "mesh")
             if mesh is not None:
                 if obj.get("type", "model") not in ("model", "solidsupport"):
-                    return np.empty((0, 3, 3))
+                    return []
                 v = np.array([[float(e.get("x")), float(e.get("y")), float(e.get("z"))]
                               for e in mesh.iter(_CORE + "vertex")], dtype=np.float64)
-                t = np.array([[int(e.get("v1")), int(e.get("v2")), int(e.get("v3"))]
-                              for e in mesh.iter(_CORE + "triangle")], dtype=np.int64)
-                return v[t] if len(t) else np.empty((0, 3, 3))
-            parts = []
+                triangles = list(mesh.iter(_CORE + "triangle"))
+                if not triangles:
+                    return []
+                t = np.array([[int(e.get("v1")), int(e.get("v2")), int(e.get("v3"))] for e in triangles], dtype=np.int64)
+                if extruder is None and triangles[0].get("pid") in materials and (triangles[0].get("p1") or "").isdigit():
+                    extruder = int(triangles[0].get("p1")) + 1
+                paint = [e.get("paint_color", "") for e in triangles]
+                return [{"name": clean_name(cfg_name.get((top, oid)) or obj.get("name") or ""), "tris": v[t],
+                         "extruder": extruder, "paint": paint if any(paint) else None}]
+            out = []
             for comp in obj.iter(_CORE + "component"):
                 cid = comp.get("objectid")
-                if (oid, cid) in skip:
+                if (top, cid) in skip:
                     continue
                 sub = comp.get(_PROD + "path", "").lstrip("/") or file
-                parts.append(_apply(object_tris(sub, cid, depth + 1), _matrix(comp.get("transform"))))
-            return np.concatenate(parts) if parts else np.empty((0, 3, 3))
+                m = _matrix(comp.get("transform"))
+                for part in parts_of(sub, cid, top, extruder, depth + 1):
+                    out.append({**part, "tris": _apply(part["tris"], m)})
+            return out
 
-        placed = []
+        objects = []
         build = root.find(_CORE + "build")
         for item in (build if build is not None else []):
             oid = item.get("objectid")
             if item.get("printable", "1") == "0" or (plate_objects is not None and oid not in plate_objects):
                 continue
-            placed.append(_apply(object_tris(root_name, oid), _matrix(item.get("transform"))))
-        if len(placed) > 1:
-            notes.append(f"{len(placed)} objects were joined into one part, keeping their positions.")
-    tris = np.concatenate(placed) if placed else np.empty((0, 3, 3))
-    if not len(tris):
+            m = _matrix(item.get("transform"))
+            parts = [{**part, "tris": _apply(part["tris"], m) * scale}
+                     for part in parts_of(root_name, oid, oid, cfg_extruder.get((oid, None)))]
+            if parts:
+                top = next((o for o in root.iter(_CORE + "object") if o.get("id") == oid), None)
+                name = clean_name(cfg_name.get((oid, None)) or (top.get("name") if top is not None else "") or "")
+                objects.append({"name": name or parts[0]["name"], "parts": parts})
+    if not objects:
         raise ModelError(f"{path.name} holds no printable mesh")
-    return tris * scale, notes
+    return {"objects": objects, "colours": colours, "filaments": filaments, "notes": notes}
 
 
-def load_mesh(path: Path) -> tuple[np.ndarray, list[str]]:
-    """Triangles (n, 3, 3) in millimetres, oriented as the file has them, plus any notes."""
+def load_objects(path: Path) -> dict:
+    """The model as objects and parts, in millimetres, oriented and placed as the file has them.
+
+    Same shape as _load_3mf returns. STL and OBJ files are one object with one part.
+    """
     if not path.is_file():
         raise ModelError(f"Model not found: {path}")
     suffix = path.suffix.lower()
-    if suffix == ".stl":
-        return _load_stl(path), []
-    if suffix == ".obj":
-        return _load_obj(path), []
     if suffix == ".3mf":
-        return _load_3mf(path)
-    raise ModelError(f"{path.suffix} files cannot be read here. Export the model as STL or 3MF.")
+        loaded = _load_3mf(path)
+        for obj in loaded["objects"]:
+            obj["name"] = obj["name"] or clean_name(path.stem)
+            for i, part in enumerate(obj["parts"]):
+                part["name"] = part["name"] or (obj["name"] if len(obj["parts"]) == 1 else f"{obj['name']} {i + 1}")
+        return loaded
+    if suffix == ".stl":
+        tris = _load_stl(path)
+    elif suffix == ".obj":
+        tris = _load_obj(path)
+    else:
+        raise ModelError(f"{path.suffix} files cannot be read here: the slicer's command line takes STL, OBJ and 3MF only. "
+                         "Open the file in Flash Studio and export it as STL, or ask its designer for a 3MF.")
+    name = clean_name(path.stem)
+    return {"objects": [{"name": name, "parts": [{"name": name, "tris": tris, "extruder": None, "paint": None}]}],
+            "colours": [], "filaments": 0, "notes": []}
+
+
+def filaments_needed(loaded: dict) -> int:
+    """How many toolheads the model uses: its highest assigned toolhead, or, when it is
+    colour-painted, the number of filaments its file was saved with."""
+    parts = [part for obj in loaded["objects"] for part in obj["parts"]]
+    needed = max([part["extruder"] or 1 for part in parts], default=1)
+    if any(part["paint"] for part in parts):
+        needed = max(needed, loaded["filaments"])
+    return needed
+
+
+def load_mesh(path: Path) -> tuple[np.ndarray, list[str]]:
+    """Every printed triangle (n, 3, 3) in millimetres, plus any notes about the file."""
+    loaded = load_objects(path)
+    return np.concatenate([part["tris"] for obj in loaded["objects"] for part in obj["parts"]]), loaded["notes"]
 
 
 def designer_settings(path: Path) -> dict:
@@ -204,8 +285,9 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE) -> dict:
         raise ModelError(f"Model not found: {path}")
     if path.suffix.lower() not in MESH_SUFFIXES:
         return {"file": str(path), "analysed": False,
-                "note": "Shape analysis covers STL, OBJ and 3MF. Export the model as one of those."}
-    tris, notes = load_mesh(path)
+                "note": "Shape analysis covers STL, OBJ and 3MF."}
+    loaded = load_objects(path)
+    tris, notes = np.concatenate([part["tris"] for obj in loaded["objects"] for part in obj["parts"]]), loaded["notes"]
     lo, hi = tris.reshape(-1, 3).min(axis=0), tris.reshape(-1, 3).max(axis=0)
     size = hi - lo
     cross = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
@@ -234,5 +316,9 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE) -> dict:
         "height_to_footprint": round(float(size[2]) / footprint_min, 2) if footprint_min else 0.0,
         "fits_bed": bool(size[0] <= BED_X and size[1] <= BED_Y and size[2] <= BED_Z),
         "fits_bed_if_rotated": bool(sorted(size)[0] <= BED_Z and sorted(size)[1] <= BED_X and sorted(size)[2] <= BED_X),
+        "objects": [obj["name"] for obj in loaded["objects"]],
+        "parts": sum(len(obj["parts"]) for obj in loaded["objects"]),
+        "filaments_needed": filaments_needed(loaded),
+        "colours": loaded["colours"],
         "notes": notes,
     }

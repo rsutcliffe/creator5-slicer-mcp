@@ -1,6 +1,6 @@
 # Handover: Creator 5 slicing by MCP
 
-Written 15 November 2026 at the end of the first session, which ran in a cloud chat with no ability to run software on the owner's Mac. Updated the same day by the second session, run in Claude Code on the Mac.
+Written 15 November 2026 at the end of the first session, which ran in a cloud chat with no ability to run software on the owner's Mac. Updated the same day by the second session, run in Claude Code on the Mac, in two rounds.
 
 ## 1. Where things stand
 
@@ -26,7 +26,11 @@ Proven on the owner's Mac:
 | Downloaded 3MF becomes a project | PS5 holder 3MF: mesh read with 10,810 triangles and 50.2 x 87.0 x 60.0 mm, identical to Flash Studio's own export (session 2) |
 | Designer's supports kept | PS5 holder: `enable_support = 1` in the G-code, 343 support sections; session 1's code gave 0 |
 | The project itself slices, and every chosen setting reaches the G-code | Flash Studio CLI slices our .3mf with no other settings files; 18 of 18 settings matched (`settings_mismatched` empty) |
-| Real-slicer test | `tests/test_real_slicer.py` passes on this Mac, skips elsewhere |
+| Real-slicer tests | `tests/test_real_slicer.py` (three tests) passes on this Mac, skips elsewhere |
+| Multi-colour project | ElijahGames Skeleton-Angel four-colour plate: Flash Studio's CLI sliced our project, named both objects (`Skeleton`, `Angel`), and used all four toolheads (46.4, 34.7, 29.8 and 13.4 g; 1,485 filament changes) |
+| Part named by its designer, not the file hash | PS5 holder: G-code object `drzak_na_ps5_ovladac_v3`, was `93b857fe…` |
+| `best` quality | PS5 holder on `0.10mm Standard @FF C5`: 2h 51m, 31 g, 18 of 18 settings matched, 415 support sections |
+| Spool register | `black pla` saved in `~/Creator5Prints/spools.json`; the request `black-pla` resolved to Creality Ender PLA at 215/60 C |
 
 Not yet proven:
 
@@ -34,7 +38,8 @@ Not yet proven:
 - The session 2 project, opened on screen. The owner declined screen access while a print was running, so the PS5 holder project has not been opened in Flash Studio. The file format is unchanged from session 1's working one apart from the mesh source and colour, and the CLI slices it, but nobody has looked at it in the window.
 - `open_in_slicer` now uses `open -n`. This follows from Flash Studio's source (`Plater::open_3mf_file`) and its config (`single_instance: false`, `project_load_behaviour: ask_when_relevant`), but has not been watched on screen.
 - The MCP tools called from Claude Desktop or Claude Code. The running MCP server loads the main checkout's code, so restart Claude after merging to pick up session 2.
-- `send_to_printer` and `printer_status` over the LAN. Written from OrcaSlicer's source, never run against the printer. Flash Studio's own Print button makes them unnecessary for now.
+- Colour-painted models. The writer carries `paint_color` through and a unit test checks the file, but no real painted model has been sliced.
+- A multi-colour print on the machine. The four-colour plate was sliced, not printed.
 
 ## 2. The machine
 
@@ -62,6 +67,10 @@ Each of these cost a round trip through the owner. Do not relearn them.
 9. **`--orient 1 --export-stl` works headless**, unlike `--export-3mf`. Use it to orient once and build both the project and the G-code from the result.
 10. **The import dialog only appears when the plate is not empty.** `project_load_behaviour` defaults to `ask_when_relevant`, and `Plater::open_3mf_file` asks only when `model().objects` is non-empty. With `single_instance: false`, `open -n` gives a fresh, empty window, so there is no dialog and an open project is never replaced.
 11. **Overhang as a share of the surface misses real overhangs.** 112 mm² on the PS5 holder was 0.6%, below the old 1% rule. Use area.
+12. **Neither slicer's command line reads STEP.** Flash Studio and OrcaSlicer 2.5 both answer "Unknown file format. Input file must have .stl, .obj, .amf(.xml) extension"; only their windows import STEP. Supporting it needs a converter library, which is the owner's call.
+13. **Names and toolheads live in `Metadata/model_settings.config`.** `_BBS_3MF_Importer` matches each `<part id>` to the object id of a component, and reads `name` and `extruder` metadata from the object and each part. Write every object as a parent with components, even a single part. The G-code's `EXCLUDE_OBJECT_DEFINE NAME=` lines show the names Flash Studio loaded, so this can be checked without the window.
+14. **Filament settings are one value per toolhead.** With N filaments, `filament_settings_id`, `filament_colour` and every filament key have N entries, and `different_settings_to_system` and `inherits_group` have N + 2 (process, each filament, printer).
+15. **`filament used [g]` in the G-code is per toolhead.** Sum it for the total.
 5. **Speed is best limited through `filament_max_volumetric_speed`**, not individual speed settings. It covers every move.
 6. **Curly quotes.** Two commands failed because the chat app changed `"` to typographic quotes. The terminal command takes hyphenated words (`--filament ender-pla`) for this reason.
 
@@ -78,15 +87,13 @@ From this session and from the article the owner shared (How-To Geek, "This is w
 
 ## 5. What to do next, in order
 
-Done in session 2: the MCP path writes and opens the project without prompting (server instructions and `open -n`); the integration test (`tests/test_real_slicer.py`); the filament colour from the request.
+Done in session 2: the MCP path writes and opens the project without prompting (server instructions and `open -n`); the integration tests (`tests/test_real_slicer.py`); the filament colour from the request; the spool register; object names; multi-colour and multi-object 3MFs; a `best` quality level; the LAN upload and USB copy removed.
 
-1. **Open the PS5 holder project on screen** once the current print has finished: `~/Creator5Prints/20261115_165820_ps5_holder_v2/ps5_holder_v2.3mf`. Confirm a new window with no dialog, the model on the plate, Generic PLA @FF C5 and 0.12mm Standard @FF C5 shown as modified, supports on, and Slice and Print enabled.
+1. **Open the projects on screen** once the current print has finished: `~/Creator5Prints/20261115_173203_drzak_na_ps5_ovladac_v3/drzak_na_ps5_ovladac_v3.3mf` and `~/Creator5Prints/20261115_172949_Skeleton/Skeleton.3mf`. Confirm a new window with no dialog, the model on the plate under its own name, the presets shown as modified, supports on, four filaments in the right colours on the second, and Slice and Print enabled.
 2. **Get the PS5 holder print result from the owner** and record it in `docs/SETTINGS.md`: first layer, walls, support removal, strength, fit. Fix any setting in `recommend.py` so it applies to every future print.
-3. **Keep a spool register.** A small JSON file of the owner's filaments with their label figures, so "the black PLA" resolves without a photo. Accept label figures when a new spool appears.
-4. **Name the object in the project.** Add `Metadata/model_settings.config` with an object name, if Flash Studio shows a downloaded file's hash (such as `93b857fe…`) as the name. Check this in step 1.
-5. **Multi-material.** The Creator 5 has four toolheads. The server handles one filament on toolhead 1.
-6. **Decide the fate of the LAN upload and the USB copy.** The owner does not want either. Remove them or leave them clearly marked as unused.
-7. **OrcaSlicer 2.5 `.opc` presets.** Only worth reading if the owner moves off Flash Studio.
+3. **Calibrate per spool.** The flow cap comes from the label's top speed, which is conservative. One flow and temperature test per spool, stored in the register, would replace it.
+4. **STEP files.** Not supported (section 3, item 12). Ask the owner whether to add a converter library.
+5. **OrcaSlicer 2.5 `.opc` presets.** Only worth reading if the owner moves off Flash Studio.
 
 ## 6. The hook, for reference
 

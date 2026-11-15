@@ -66,7 +66,9 @@ def test_strength_scales_walls_and_infill(profiles_dir):
 
 def test_quality_picks_layer_height(profiles_dir):
     heights = {q: recommend.recommend(profiles_dir, "PLA", quality=q)["layer_height_mm"] for q in recommend.QUALITY}
-    assert heights == {"draft": 0.24, "standard": 0.2, "fine": 0.12}
+    assert heights == {"draft": 0.24, "standard": 0.2, "fine": 0.12, "best": 0.12}    # this fixture has no thinner preset
+    best = recommend.recommend(profiles_dir, "PLA", quality="best")
+    assert best["process_overrides"]["outer_wall_speed"] == "100" and any("Best quality" in r for r in best["rationale"])
     fine = recommend.recommend(profiles_dir, "PLA", quality="fine")["process_overrides"]
     assert fine["outer_wall_speed"] == "100" and fine["wall_sequence"] == "inner-outer-inner wall"
 
@@ -162,10 +164,31 @@ def test_supports_follow_overhang_area_not_share_of_surface(profiles_dir):
     assert recommend.recommend(profiles_dir, "PLA", analysis=shape)["process_overrides"]["enable_support"] == "1"
 
 
+def test_spools_match_on_every_name_word_and_longest_name_wins(tmp_path):
+    from creator5_mcp import spools
+    spools.save(tmp_path, "Black  PLA", "ender pla", 215, 60, 80, "black")
+    spools.save(tmp_path, "silk gold pla", "silk pla", colour="#D4AF37")
+    assert spools.find(tmp_path, "the black PLA please")["name"] == "black pla"
+    assert spools.find(tmp_path, "gold silk PLA")["filament"] == "silk pla"
+    assert spools.find(tmp_path, "PLA") is None and spools.find(tmp_path / "missing", "black pla") is None
+
+
+def test_colour_3mf_parts_toolheads_and_colours(colour_3mf):
+    loaded = model.load_objects(colour_3mf)
+    assert [(o["name"], [(p["name"], p["extruder"]) for p in o["parts"]]) for o in loaded["objects"]] == [
+        ("Figure", [("T1 Black", 1), ("T2 White", 2)]), ("Plinth", [("T3 Gold", 3)])]
+    assert loaded["colours"] == ["#191919", "#F0F0EB", "#C89B3C"] and model.filaments_needed(loaded) == 3
+    assert loaded["objects"][1]["parts"][0]["paint"][0] == "8" and loaded["objects"][0]["parts"][0]["paint"] is None
+    a = model.analyse(colour_3mf)
+    assert a["size_mm"] == [70.0, 30.0, 15.0] and a["parts"] == 3 and a["objects"] == ["Figure", "Plinth"]
+    assert model.clean_name("drzak na ps5 ovladac v3.stl_1") == "drzak na ps5 ovladac v3"
+
+
 def test_colour_comes_from_the_filament_name():
     from creator5_mcp import project
     assert project.colour_for("Creality Ender PLA, black") == "#161616"
     assert project.colour_for("silk gold pla") == "#D4AF37" and project.colour_for("PETG", "#ABCDEF") == "#ABCDEF"
+    assert project.colour_for("#c89b3c") == "#C89B3C"
 
 
 def test_explicit_choices_beat_auto(profiles_dir, mushroom_stl):

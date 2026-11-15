@@ -16,6 +16,7 @@ Layer height is chosen as a fraction of nozzle diameter, then snapped to the nea
 | draft | 0.65 | 0.24 mm | none |
 | standard | 0.5 | 0.20 mm | none |
 | fine | 0.3 | 0.12 mm | outer wall capped at 100 mm/s; outer wall printed between inner walls when there are three or more |
+| best | 0.25 | 0.10 mm | as fine |
 
 Thinner layers reduce visible stepping on curves and slopes. They do not make a part meaningfully stronger, and they lengthen the print.
 
@@ -84,9 +85,19 @@ The server writes the project file first, then slices that same file with Flash 
 | PA-CF, PAHT-CF, PPA-CF, PPS-CF | matching preset | 8 mm brim | needs a closed, warm chamber; dry first |
 | PVA, BVOH | matching preset | none | support material only |
 
-The purge tower is switched off for every job, because the server currently slices single-material prints.
+The purge tower is switched off for single-filament jobs and on when a job uses more than one toolhead.
+
+## More than one filament
+
+Each toolhead gets its own filament preset, label figures and colour. The process (layer height, walls, infill, speeds) is shared, chosen for toolhead 1's filament. A second material's own process needs are added without replacing anything already chosen, and where both set a speed the slower one is used. Example: silk PLA in toolhead 4 slows the outer wall to 60 mm/s for the whole job.
+
+Colours come, in order, from a colour word in the request, the saved spool, then the model file's own colour for that toolhead.
 
 The filament colour shown in Flash Studio follows a colour word in the request (`black PLA`, `silk gold PLA`). With none, it is black.
+
+## Saved spools
+
+`save_spool` keeps a spool's material, label figures and colour under a name, in `spools.json` in the output folder. A request that contains every word of a spool's name uses it; with two matches the longer name wins. Figures passed with a request take priority over the saved ones.
 
 ## Figures from the spool label
 

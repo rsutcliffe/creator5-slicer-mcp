@@ -36,3 +36,25 @@ def test_designer_3mf_slices_as_a_project_with_every_setting_in_the_gcode(real_e
     assert "; wall_loops = 4" in gcode and "; nozzle_temperature = 215" in gcode
     assert "; filament_settings_id = \"Generic PLA @FF C5\"\n" in gcode       # one filament, not a designer's four
     assert 15 < result["summary"]["print_time_seconds"] / 60 < 120
+
+
+def test_best_quality_uses_the_thinner_creator_5_preset(real_env):
+    from creator5_mcp import recommend
+    profiles_dir = FLASH_STUDIO.parents[1] / "Resources" / "profiles"
+    assert recommend.recommend(profiles_dir, "PLA", quality="best")["process_preset"] == "0.10mm Standard @FF C5"
+    assert recommend.recommend(profiles_dir, "PLA", quality="fine")["process_preset"] == "0.12mm Standard @FF C5"
+
+
+def test_multi_colour_project_prints_each_part_with_its_own_toolhead(real_env, colour_3mf):
+    from creator5_mcp import server
+    result = server.slice_model(str(colour_3mf), "black PLA", other_filaments=["white PLA", "gold silk PLA"])
+    assert result["ok"], result
+    assert result["exit_code"] == 0 and result["settings_mismatched"] == []
+    gcode = Path(result["gcode"]).read_text(errors="ignore")
+    # Flash Studio named both objects from the project and used all three toolheads.
+    assert "EXCLUDE_OBJECT_DEFINE NAME=Figure" in gcode and "EXCLUDE_OBJECT_DEFINE NAME=Plinth" in gcode
+    assert '; filament_settings_id = "Flashforge PLA Basic @FF C5";"Flashforge PLA Basic @FF C5";"Flashforge PLA Silk @FF C5"' in gcode
+    assert "; filament_colour = #161616;#F2F2F2;#D4AF37" in gcode
+    used = next(line for line in gcode.splitlines() if line.startswith("; filament used [g]"))
+    grams = [float(v) for v in used.split("=")[1].split(",")]
+    assert len(grams) == 3 and all(g > 0 for g in grams), used

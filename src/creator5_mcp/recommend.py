@@ -128,6 +128,7 @@ QUALITY: dict[str, tuple[float, str]] = {
     "draft": (0.65, "Thick layers for speed; layer lines are visible."),
     "standard": (0.5, "Balanced layer height for everyday parts."),
     "fine": (0.3, "Thin layers and slower outer walls for a smooth surface; roughly doubles print time."),
+    "best": (0.25, "The thinnest practical layers and slower outer walls for the smoothest surface; the slowest choice."),
 }
 
 AUTO, ON, OFF = "auto", "on", "off"
@@ -167,6 +168,7 @@ def recommend(
     bed_temp: int | None = None,
     max_speed: int | None = None,
     designer: dict | None = None,
+    toolheads: int = 1,
 ) -> dict:
     """Build a full settings plan. Pure function: nothing is written or sliced.
 
@@ -174,6 +176,7 @@ def recommend(
     label; they take priority over the preset and over the material's defaults.
     designer holds the shape-dependent settings saved in the model's 3MF
     (model.designer_settings); with supports or brim on auto they are followed.
+    toolheads is how many filaments the job uses; above one, the purge tower stays on.
     """
     if quality not in QUALITY:
         raise RecommendError(f"quality must be one of {', '.join(QUALITY)}")
@@ -231,14 +234,14 @@ def recommend(
         rationale.append("Printed parts are weakest between layers. Orient the model so the main load runs along the layers, not across them.")
 
     # Quality -----------------------------------------------------------------
-    if quality == "fine":
+    if quality in ("fine", "best"):
         current = float(base.get("outer_wall_speed") or 200)
         overrides["outer_wall_speed"] = f"{min(current, 100):g}"
         if walls >= 3:
             overrides["wall_sequence"] = "inner-outer-inner wall"
-            rationale.append("Fine quality: outer wall capped at 100 mm/s and printed between inner walls for a cleaner surface.")
+            rationale.append(f"{quality.capitalize()} quality: outer wall capped at 100 mm/s and printed between inner walls for a cleaner surface.")
         else:
-            rationale.append("Fine quality: outer wall capped at 100 mm/s for a cleaner surface.")
+            rationale.append(f"{quality.capitalize()} quality: outer wall capped at 100 mm/s for a cleaner surface.")
     if precise_fit:
         overrides["wall_sequence"] = "inner wall/outer wall"
         overrides["precise_outer_wall"] = "1"
@@ -254,8 +257,11 @@ def recommend(
         overrides[key] = value
     rationale.extend(material.notes)
 
-    # Single-material job: no purge tower needed.
-    overrides["enable_prime_tower"] = "0"
+    if toolheads > 1:
+        overrides["enable_prime_tower"] = "1"
+        rationale.append(f"Purge tower on: the job uses {toolheads} toolheads, and the tower primes each one after a change.")
+    else:
+        overrides["enable_prime_tower"] = "0"   # single-material job: no purge tower needed
 
     # Shape-aware choices -----------------------------------------------------
     shape = analysis if analysis and analysis.get("analysed") else None

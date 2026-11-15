@@ -35,9 +35,6 @@ class Settings:
     slicer_path: Path | None
     profiles_dir: Path | None
     output_dir: Path
-    printer_ip: str | None
-    printer_serial: str | None
-    printer_check_code: str | None
 
     def require_slicer(self) -> Path:
         if self.slicer_path is None:
@@ -144,37 +141,8 @@ def _pick(explicit_slicer: Path | None, explicit_profiles: Path | None) -> tuple
     return first_slicer, explicit_profiles
 
 
-PRINTER_FILE = Path.home() / ".creator5-slicer.json"
-
-
-def _printer_file() -> Path:
-    return Path(os.environ.get("C5_PRINTER_FILE", str(PRINTER_FILE))).expanduser()
-
-
-def save_printer(ip: str, serial: str, check_code: str) -> Path:
-    """Remember the printer's LAN details so they need entering only once."""
-    import json
-    path = _printer_file()
-    path.write_text(json.dumps({"ip": ip, "serial": serial, "check_code": check_code}, indent=2) + "\n", encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
-    return path
-
-
-def _saved_printer() -> dict:
-    import json
-    try:
-        data = json.loads(_printer_file().read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
 def load_settings() -> Settings:
     env = os.environ
-    saved = _saved_printer()
     slicer, profiles = _pick(
         Path(env["ORCA_SLICER_PATH"]).expanduser() if env.get("ORCA_SLICER_PATH") else None,
         Path(env["ORCA_PROFILES_DIR"]).expanduser() if env.get("ORCA_PROFILES_DIR") else None)
@@ -184,7 +152,4 @@ def load_settings() -> Settings:
         slicer_path=slicer,
         profiles_dir=profiles,
         output_dir=output,
-        printer_ip=env.get("C5_PRINTER_IP") or saved.get("ip") or None,
-        printer_serial=env.get("C5_PRINTER_SERIAL") or saved.get("serial") or None,
-        printer_check_code=env.get("C5_PRINTER_CHECK_CODE") or saved.get("check_code") or None,
     )
