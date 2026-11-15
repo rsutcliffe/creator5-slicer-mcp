@@ -82,7 +82,7 @@ MATERIALS: tuple[Material, ...] = (
     Material("TPU_90A", "TPU 90A", ("Flashforge TPU-90A", "Generic TPU-90A"), (r"90\s*a",), flexible=True),
     Material("TPU", "TPU 95A", ("Flashforge TPU-95A", "Generic TPU-95A"), (r"tpu|tpe|flex",), flexible=True,
              warnings=(_DRY,)),
-    Material("PAHT_CF", "PAHT-CF", ("FusRock PAHT-CF",), (r"paht",), warps=True, warnings=(_ENCLOSURE, _FIBRE, _DRY)),
+    Material("PAHT_CF", "PAHT-CF", ("Flashforge PAHT-CF", "FusRock PAHT-CF"), (r"paht",), warps=True, warnings=(_ENCLOSURE, _FIBRE, _DRY)),
     Material("PPA_CF", "PPA-CF", ("Flashforge PPA-CF",), (r"ppa",), warps=True, warnings=(_ENCLOSURE, _FIBRE, _DRY)),
     Material("PPS_CF", "PPS-CF", ("Flashforge PPS-CF",), (r"pps",), warps=True, warnings=(_ENCLOSURE, _FIBRE, _DRY)),
     Material("PA_CF", "PA-CF (nylon)", ("Flashforge PA-CF", "FusRock PAHT-CF"), (r"\bpa\b|pa[\s_-]*cf|nylon",), warps=True,
