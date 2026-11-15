@@ -1,4 +1,4 @@
-"""Run the OrcaSlicer command line and read back what it produced."""
+"""Run the slicer's command line on a project file and read back what it produced."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import profiles
 from .config import Settings
 
 
@@ -15,7 +14,6 @@ class SliceError(RuntimeError):
     pass
 
 
-FILAMENT_DIAMETER = 1.75  # mm
 _END_MARKERS = ("; EXECUTABLE_BLOCK_END", ";end_gcode", "; CONFIG_BLOCK_END", "; filament used [g]")
 
 
@@ -36,9 +34,10 @@ def gcode_is_complete(path: Path) -> bool:
 
 _TIME = re.compile(r";\s*(?:total estimated time|estimated printing time \(normal mode\))\s*[:=]\s*([0-9dhms ]+)", re.I)
 _FIELDS = {
-    "filament_used_g": re.compile(r";\s*(?:total )?filament used \[g\]\s*[:=]\s*([0-9.]+)", re.I),
-    "filament_used_mm": re.compile(r";\s*(?:total )?filament used \[mm\]\s*[:=]\s*([0-9.]+)", re.I),
-    "filament_used_cm3": re.compile(r";\s*(?:total )?filament used \[cm3\]\s*[:=]\s*([0-9.]+)", re.I),
+    # One value per toolhead, comma-separated; the summary reports their total.
+    "filament_used_g": re.compile(r";\s*(?:total )?filament used \[g\]\s*[:=]\s*([0-9., ]+)", re.I),
+    "filament_used_mm": re.compile(r";\s*(?:total )?filament used \[mm\]\s*[:=]\s*([0-9., ]+)", re.I),
+    "filament_used_cm3": re.compile(r";\s*(?:total )?filament used \[cm3\]\s*[:=]\s*([0-9., ]+)", re.I),
     "layers": re.compile(r";\s*total layer(?:s count| number)\s*[:=]\s*([0-9]+)", re.I),
 }
 
@@ -69,7 +68,10 @@ def parse_gcode_summary(path: Path) -> dict:
     for key, pattern in _FIELDS.items():
         match = pattern.search(text)
         if match:
-            out[key] = float(match.group(1)) if "." in match.group(1) else int(match.group(1))
+            values = [float(v) for v in match.group(1).split(",") if v.strip()]
+            out[key] = int(values[0]) if key == "layers" else round(sum(values), 2)
+            if key == "filament_used_g" and len(values) > 1:
+                out["filament_used_g_per_toolhead"] = values
     return out
 
 
@@ -82,73 +84,46 @@ def version(settings: Settings) -> str:
     return first[0] if first else "unknown"
 
 
-def slice_model(
-    settings: Settings,
-    model: Path,
-    plan: dict,
-    extra_process: dict | None = None,
-    extra_filament: dict | None = None,
-    job_name: str | None = None,
-    auto_orient: bool = False,
-    copies: int = 1,
-    timeout: int = 900,
-) -> dict:
-    """Write flattened presets for `plan`, slice `model`, and summarise the result."""
-    binary = settings.require_slicer()
-    profiles_dir = settings.require_profiles()
-    if not model.is_file():
-        raise SliceError(f"Model not found: {model}")
-    if copies < 1:
-        raise SliceError("copies must be at least 1")
-
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    name = re.sub(r"[^A-Za-z0-9._-]+", "_", job_name or model.stem).strip("_") or "print"
-    job_dir = settings.output_dir / f"{stamp}_{name}"
-    preset_dir = job_dir / "presets"
-
-    # Recommended settings go on first; the caller's own overrides go on last and
-    # are the only ones checked for unfamiliar keys.
-    machine = profiles.flatten(profiles_dir, "machine", plan["machine_preset"])
-    process, _ = profiles.apply_overrides(
-        profiles.flatten(profiles_dir, "process", plan["process_preset"]), plan["process_overrides"])
-    process, unknown = profiles.apply_overrides(process, extra_process)
-    filament, _ = profiles.apply_overrides(
-        profiles.flatten(profiles_dir, "filament", plan["filament_preset"]), plan["filament_overrides"])
-    filament, missing = profiles.apply_overrides(filament, extra_filament)
-    unknown += missing
-
-    # The Creator 5 takes 1.75 mm filament. A different value means a preset was
-    # resolved wrongly, and printing it would badly under- or over-extrude.
-    diameters = filament.get("filament_diameter")
-    diameters = diameters if isinstance(diameters, list) else [diameters]
-    if any(d is None or abs(float(d) - FILAMENT_DIAMETER) > 0.01 for d in diameters):
-        raise SliceError(f"Refusing to slice: the filament preset resolves to a diameter of {diameters} mm, "
-                         f"but the Creator 5 uses {FILAMENT_DIAMETER} mm. Please report this.")
-
-    machine_path = profiles.write_preset(machine, preset_dir / "machine.json")
-    process_path = profiles.write_preset(process, preset_dir / "process.json")
-    filament_path = profiles.write_preset(filament, preset_dir / "filament.json")
-
-    # No --export-3mf: it makes the slicer render thumbnails through OpenGL,
-    # which crashes when the slicer runs without a window (seen on macOS).
-    args = [
-        str(binary),
-        "--load-settings", f"{machine_path};{process_path}",
-        "--load-filaments", str(filament_path),
-        "--orient", "1" if auto_orient else "0",
-        "--arrange", "1",
-        "--slice", "0",
-        "--outputdir", str(job_dir),
-    ]
-    args += [str(model)] * copies
+def _run(settings: Settings, args: list[str], job_dir: Path, log_name: str, timeout: int) -> subprocess.CompletedProcess:
+    job_dir.mkdir(parents=True, exist_ok=True)
+    args = [str(settings.require_slicer()), *args]
     try:
         result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         raise SliceError(f"Slicer timed out after {timeout} s") from exc
-    (job_dir / "slicer.log").write_text(
+    (job_dir / log_name).write_text(
         "$ " + " ".join(args) + f"\n\nexit code {result.returncode}\n\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}",
         encoding="utf-8")
+    return result
 
+
+def orient(settings: Settings, model: Path, job_dir: Path, name: str = "model", timeout: int = 300) -> Path:
+    """Let the slicer turn the model to its best printing orientation, and return it as an STL.
+
+    The project and the G-code are then built from this one file, so both use the same orientation.
+    (The command line reads STL, OBJ and 3MF only; it cannot convert STEP.)
+    """
+    out = job_dir / "oriented"
+    result = _run(settings, ["--orient", "1", "--arrange", "0", "--export-stl", "--outputdir", str(out), str(model)],
+                  job_dir, "orient.log", timeout)
+    stls = sorted(out.rglob("*.stl")) if out.is_dir() else []
+    if not stls:
+        raise SliceError(f"The slicer could not orient the model (exit code {result.returncode}). "
+                         f"Log: {job_dir / 'orient.log'}")
+    target = out / f"{name}.stl"      # the slicer names it after its own object; ours is the job's name
+    if stls[0] != target:
+        stls[0].rename(target)
+    return target
+
+
+def slice_project(settings: Settings, project: Path, job_dir: Path, timeout: int = 900) -> dict:
+    """Slice the project file exactly as written, so the G-code matches what the slicer opens.
+
+    No --load-settings: the slicer takes every setting from the project. No --export-3mf: it
+    makes the slicer render thumbnails through OpenGL, which crashes without a window (macOS).
+    """
+    result = _run(settings, ["--orient", "0", "--arrange", "0", "--slice", "0", "--outputdir", str(job_dir), str(project)],
+                  job_dir, "slicer.log", timeout)
     gcodes = sorted(job_dir.rglob("*.gcode"))
     tail = (result.stderr or result.stdout).strip()[-1500:]
     if not gcodes:
@@ -161,7 +136,6 @@ def slice_model(
     if result.returncode != 0:
         notes.append(f"The slicer finished the G-code, then exited with code {result.returncode}. "
                      "The file is complete; the log has the details.")
-
     return {
         "job_dir": str(job_dir),
         "gcode": str(gcodes[0]),
@@ -169,7 +143,50 @@ def slice_model(
         "exit_code": result.returncode,
         "notes": notes,
         "summary": parse_gcode_summary(gcodes[0]),
-        "presets_written": {"machine": str(machine_path), "process": str(process_path), "filament": str(filament_path)},
-        "settings_not_in_base_preset": unknown,
         "log": str(job_dir / "slicer.log"),
     }
+
+
+def _norm(value) -> str:
+    """A setting's values, one per toolhead, in a form that compares equal however it was written."""
+    parts = value if isinstance(value, list) else re.split(r"[;,]", str(value))
+    out = []
+    for text in parts:
+        text = str(text).strip().strip('"')
+        try:
+            text = f"{float(text.rstrip('%')):g}" + ("%" if text.endswith("%") else "")
+        except ValueError:
+            pass
+        out.append(text)
+    return ",".join(out)
+
+
+def support_sections(gcode: Path) -> int:
+    """How many stretches of support the slicer actually printed (0 means none anywhere)."""
+    with gcode.open("r", encoding="utf-8", errors="ignore") as handle:
+        return sum(1 for line in handle if line.startswith(";TYPE:Support"))
+
+
+def settings_in_gcode(gcode: Path) -> dict[str, str]:
+    """The settings block the slicer writes at the top of the G-code."""
+    out: dict[str, str] = {}
+    in_block = False
+    with gcode.open("r", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            if line.startswith("; CONFIG_BLOCK_START"):
+                in_block = True
+            elif line.startswith("; CONFIG_BLOCK_END"):
+                break
+            elif in_block and " = " in line:
+                key, _, value = line[2:].rstrip("\n").partition(" = ")
+                out[key] = value
+    return out
+
+
+def check_settings(gcode: Path, expected: dict) -> list[str]:
+    """Keys whose value in the G-code differs from what the project asked for."""
+    found = settings_in_gcode(gcode)
+    if not found:
+        return ["The G-code has no settings block, so the settings could not be checked."]
+    return [f"{key}: asked for {_norm(value)}, G-code has {_norm(found.get(key, 'missing'))}"
+            for key, value in expected.items() if _norm(found.get(key, "missing")) != _norm(value)]

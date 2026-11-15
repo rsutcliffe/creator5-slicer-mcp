@@ -2,10 +2,11 @@
 """Slice a 20 mm test cube with the real slicer to confirm the whole chain works.
 
 Run this once after installing:  python scripts/smoke_test.py
-It writes into the normal output folder and prints what the slicer produced.
+It writes into a throwaway folder and prints what the slicer produced.
 """
 
 import json
+import os
 import struct
 import sys
 import tempfile
@@ -28,6 +29,8 @@ def cube(path: Path, size: float = 20.0) -> Path:
 
 
 def main() -> int:
+    # A throwaway folder, so test runs do not pile up among real print jobs.
+    os.environ.setdefault("C5_OUTPUT_DIR", tempfile.mkdtemp(prefix="creator5_smoke_"))
     setup = server.check_setup()
     print(json.dumps(setup, indent=2))
     if not setup["ok"]:
@@ -39,7 +42,11 @@ def main() -> int:
         print("\nSLICE FAILED\n" + result["error"])
         return 1
     print("\nSLICE OK (file only; nothing was sent to the printer)")
-    print(json.dumps({k: result[k] for k in ("gcode", "gcode_complete", "summary", "exit_code", "notes", "log")}, indent=2))
+    print(json.dumps({k: result[k] for k in ("project_3mf", "gcode", "gcode_complete", "summary", "exit_code", "notes", "log",
+                                             "settings_checked_in_gcode", "settings_mismatched")}, indent=2))
+    if result["settings_mismatched"]:
+        print("\nSETTINGS DID NOT REACH THE G-CODE; see settings_mismatched above.")
+        return 1
     if not result["summary"]:
         print("\nNote: the G-code was written but its time and filament comments were not recognised. "
               "Please open an issue with the first 40 lines of the G-code.")

@@ -15,7 +15,8 @@ Layer height is chosen as a fraction of nozzle diameter, then snapped to the nea
 |---|---|---|---|
 | draft | 0.65 | 0.24 mm | none |
 | standard | 0.5 | 0.20 mm | none |
-| fine | 0.3 | 0.12 mm | outer wall capped at 100 mm/s; outer wall printed between inner walls when there are three or more |
+| fine | 0.3 | 0.12 mm | outer wall capped at 100 mm/s; outer wall printed between inner walls when there are three or more, with the precise wall option off (that sequence makes Flash Studio ignore the option and warn about it) |
+| best | 0.25 | 0.10 mm | as fine |
 
 Thinner layers reduce visible stepping on curves and slopes. They do not make a part meaningfully stronger, and they lengthen the print.
 
@@ -32,21 +33,52 @@ Wall thickness is set in millimetres and converted to a wall count using the pre
 
 Reasoning: in a printed part most bending load is carried by the outer shell, so extra walls add strength more efficiently than extra infill. Gyroid is used because it is similarly stiff in all directions. Top and bottom thickness is converted to a layer count from the chosen layer height, with a minimum of three layers.
 
-Orientation matters more than any of these numbers. A part is weakest between layers, so place it on the bed with the main load running along the layers. The server leaves the model's orientation alone unless you pass `auto_orient=true`.
+Orientation matters more than any of these numbers. A part is weakest between layers, so place it on the bed with the main load running along the layers. The server leaves the model's orientation alone unless you pass `auto_orient=true`. Then Flash Studio's own orienter turns the part, and the project and the G-code are both built from that one turned copy.
 
 ## Shape-aware choices
 
-For STL files the server measures the model before slicing.
+The server measures STL, OBJ and 3MF models before slicing. For a 3MF it reads the parts on the first plate as the designer placed them, including Bambu Studio and OrcaSlicer files that keep each part in a separate file, and leaves out modifier and negative parts.
+
+### The designer's settings come first
+
+A 3MF saved by Bambu Studio, OrcaSlicer or Flash Studio usually carries the settings its designer printed it with. With `supports` and `brim` on `auto`, the server keeps the designer's choices for the settings that depend on the part's shape:
+
+`enable_support`, `support_type`, `support_style`, `support_threshold_angle`, `support_on_build_plate_only`, `brim_type`, `brim_width`, `brim_object_gap`, `raft_layers`.
+
+Only values that differ from the Creator 5 preset are applied, so Flash Studio marks just those as changed. Everything else (printer, filament, temperatures, walls, infill, layer height) still comes from the Creator 5 presets, the spool and the strength and quality you ask for. The designer's file was often made for another printer.
+
+Reason: the first PS5 controller holder came as a 3MF whose designer had turned tree supports on at 30 degrees. The server ignored that and sliced it with no supports.
+
+### Measured from the shape, when the file says nothing
 
 | Finding | Action |
 |---|---|
-| More than 1% of the surface faces downward past 45 degrees, clear of the bed | tree supports on |
+| More than 25 mm² of underside flatter than the support angle (30 degrees, the Creator 5 preset's `support_threshold_angle`), clear of the bed | tree supports on |
 | Height more than 2.5 times the shorter base dimension | 5 mm outer brim |
 | Less than 150 mm² touching the bed | 5 mm outer brim |
 | Material prone to warping | 8 mm outer brim |
+| None of the brim reasons above | brim left to the preset's `auto_brim`, which adds one only where the part needs it |
 | Larger than 256 x 256 x 256 mm | warning returned |
 
-`supports` and `brim` accept `auto`, `on` or `off`, so you keep the final say.
+Supports go on by area, not by share of the surface. The PS5 holder has 112 mm² of overhang, only 0.6% of its surface, which the old 1% rule missed. Tree supports are placed only under the faces that need them, so switching them on costs little when in doubt.
+
+`supports` and `brim` accept `auto`, `on` or `off`. An explicit `on` or `off` beats both the designer's file and the shape check.
+
+## Evidence from prints
+
+Results are logged in `print_results.json` in the output folder. Each row here is a real print.
+
+| Date | Part | Filament | Settings | Changed by hand | Outcome |
+|---|---|---|---|---|---|
+| 15 Nov 2026 | Downloaded PS5 controller holder, two copies, 60.3 g | Black Creality Ender PLA: Generic PLA @FF C5, nozzle 215 C, bed 60 C, flow cap 6.7 mm³/s | 0.20mm Standard @FF C5, functional strength (4 walls, 25% gyroid, 6 top and 5 bottom layers), ironed top, no brim | Supports switched on; model swapped into an older project; part cloned | Good quality. Support removal, strength and fit not yet reported. |
+
+What this supports: the Ender PLA label figures, the functional strength tier and the 0.20 mm preset give a good result on this machine. What it does not cover: fine or best quality, other filaments, or more than one toolhead.
+
+## How the result is checked
+
+The server writes the project file first, then slices that same file with Flash Studio's command line, taking every setting from the project. So the G-code, the time and the weight describe exactly what you will print from Flash Studio. After slicing, it reads the settings block at the top of the G-code and compares every value it chose. Any difference is returned in `settings_mismatched` and as a warning. The PS5 holder checked 19 of 19.
+
+Supports are checked in the G-code too. `support_sections_in_gcode` counts the stretches of support the slicer printed. If supports are on and the slicer generated none, a note says so. If supports are off and more than 25 mm² of underside is flatter than the support angle, a warning says the part will print over thin air.
 
 ## Filament families
 
@@ -65,7 +97,19 @@ For STL files the server measures the model before slicing.
 | PA-CF, PAHT-CF, PPA-CF, PPS-CF | matching preset | 8 mm brim | needs a closed, warm chamber; dry first |
 | PVA, BVOH | matching preset | none | support material only |
 
-The purge tower is switched off for every job, because the server currently slices single-material prints.
+The purge tower is switched off for single-filament jobs and on when a job uses more than one toolhead.
+
+## More than one filament
+
+Each toolhead gets its own filament preset, label figures and colour. The process (layer height, walls, infill, speeds) is shared, chosen for toolhead 1's filament. A second material's own process needs are added without replacing anything already chosen, and where both set a speed the slower one is used. Example: silk PLA in toolhead 4 slows the outer wall to 60 mm/s for the whole job.
+
+Colours come, in order, from a colour word in the request, the saved spool, then the model file's own colour for that toolhead.
+
+The filament colour shown in Flash Studio follows a colour word in the request (`black PLA`, `silk gold PLA`). With none, it is black.
+
+## Saved spools
+
+`save_spool` keeps a spool's material, label figures and colour under a name, in `spools.json` in the output folder. A request that contains every word of a spool's name uses it; with two matches the longer name wins. Figures passed with a request take priority over the saved ones.
 
 ## Figures from the spool label
 
