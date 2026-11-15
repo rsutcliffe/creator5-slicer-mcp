@@ -178,7 +178,7 @@ if process.get("wall_loops") == "98":          # killed part-way through writing
 (out / "plate_1.gcode").write_text(body + ";end_gcode\n; EXECUTABLE_BLOCK_END\n")
 if process.get("wall_loops") == "97":          # finishes the file, then crashes on the way out
     import os, signal
-    os.kill(os.getpid(), signal.SIGSEGV)
+    os.kill(os.getpid(), signal.SIGKILL)   # not SIGSEGV: that pops a macOS crash report each run
 '''
 
 
