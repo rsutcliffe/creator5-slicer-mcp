@@ -109,7 +109,7 @@ From this session and from the article the owner shared (How-To Geek, "This is w
 
 Done in session 2: the MCP path writes and opens the project without prompting (server instructions and `open -n`); the integration tests (`tests/test_real_slicer.py`); the filament colour from the request; the spool register; object names; multi-colour and multi-object 3MFs; a `best` quality level; the LAN upload and USB copy removed; supports checked in the G-code; a print result log with hand changes read from a saved project; CI; the smoke test writing to a throwaway folder; a proven flow limit per spool; a two-colour test piece; old test jobs moved to the Trash (`~/.Trash/Creator5Prints_tidy_20261115`).
 
-1. **Get the rest of the PS5 holder result**: support removal, strength and fit. Record it with `record_print_result`. Support removal settings (gap and interface) are still Flash Studio's defaults and were deliberately not changed without that report.
+1. **Get the rest of the PS5 holder result**: strength and fit. Supports came off cleanly with Flash Studio's default gap and interface, so those settings stay as they are.
 2. **Print the two-colour test piece**: `~/Creator5Prints/20261115_195640_Two_colour_test/Two_colour_test.3mf` (black Ender PLA and the blue PLA in toolhead 2). Then the four-colour plate, `~/Creator5Prints/20261115_195659_Skeleton/Skeleton.3mf`.
 3. **Run a flow test on the black PLA** (Flash Studio's Calibration menu) and save the result as the spool's `max_flow`. It is 6.7 mm³/s now, from one good print. The blue, teal and magenta PLA in toolheads 2 to 4 have no label figures saved yet.
 3a. **After restarting Claude, try one sentence** and check the tool arguments it chooses.

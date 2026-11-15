@@ -70,9 +70,9 @@ Results are logged in `print_results.json` in the output folder. Each row here i
 
 | Date | Part | Filament | Settings | Changed by hand | Outcome |
 |---|---|---|---|---|---|
-| 15 Nov 2026 | Downloaded PS5 controller holder, two copies, 60.3 g | Black Creality Ender PLA: Generic PLA @FF C5, nozzle 215 C, bed 60 C, flow cap 6.7 mm³/s | 0.20mm Standard @FF C5, functional strength (4 walls, 25% gyroid, 6 top and 5 bottom layers), ironed top, no brim | Supports switched on; model swapped into an older project; part cloned | Good quality. Support removal, strength and fit not yet reported. |
+| 15 Nov 2026 | Downloaded PS5 controller holder, two copies, 60.3 g | Black Creality Ender PLA: Generic PLA @FF C5, nozzle 215 C, bed 60 C, flow cap 6.7 mm³/s | 0.20mm Standard @FF C5, functional strength (4 walls, 25% gyroid, 6 top and 5 bottom layers), ironed top, no brim | Supports switched on; model swapped into an older project; part cloned | Good quality. Supports came off cleanly. Strength and fit not yet reported. |
 
-What this supports: the Ender PLA label figures, the functional strength tier and the 0.20 mm preset give a good result on this machine. What it does not cover: fine or best quality, other filaments, or more than one toolhead. At fine and best the flow per second is now the same as in this print, but the line speed is higher, so the first fine or best print should be watched.
+What this supports: the Ender PLA label figures, the functional strength tier and the 0.20 mm preset give a good result on this machine, and Flash Studio's default tree support gap and interface release cleanly from this PLA, so the server leaves them alone. What it does not cover: fine or best quality, other filaments, or more than one toolhead. At fine and best the flow per second is now the same as in this print, but the line speed is higher, so the first fine or best print should be watched.
 
 ## How the result is checked
 
