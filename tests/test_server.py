@@ -189,3 +189,12 @@ def test_claude_desktop_installer_merges_and_backs_up(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="Nothing was changed"):
         installer.main()
     assert config.read_text() == "{not json"
+
+
+def test_cli_slices_without_needing_quotes(fake_env, cube_stl, capsys):
+    from creator5_mcp import cli
+    assert cli.main([str(cube_stl), "--filament", "ender-pla", "--strength", "functional", "--copies", "2"]) == 0
+    out = capsys.readouterr().out
+    assert "Creality Ender PLA" in out and "wall_loops             4" in out and "nozzle_temperature     215" in out
+    assert "1h 23m" in out and "15.25 g" in out
+    assert cli.main(["/nope.stl", "--filament", "PLA"]) == 1 and "FAILED" in capsys.readouterr().out
