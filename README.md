@@ -105,6 +105,7 @@ python3 -m venv .venv
 - **strength**: `decorative`, `standard`, `functional` or `structural`
 - **nozzle**: `0.25`, `0.4`, `0.6` or `0.8`
 - **supports**, **brim**: `auto`, `on` or `off`
+- **nozzle_temp**, **bed_temp**, **max_speed**: figures from the spool's label, for filament from other makers
 
 Anything else in OrcaSlicer is reachable through `process_overrides` and `filament_overrides`.
 

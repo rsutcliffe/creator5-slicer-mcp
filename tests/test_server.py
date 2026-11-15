@@ -37,6 +37,13 @@ def test_overrides_apply_last_and_unknown_keys_are_flagged(fake_env, cube_stl):
     assert any("wal_loops" in w for w in result["plan"]["warnings"])
 
 
+def test_label_figures_reach_the_slicer(fake_env, cube_stl):
+    result = server.slice_model(str(cube_stl), "Creality Ender PLA", bed_temp=50)
+    filament = json.loads(Path(result["presets_written"]["filament"]).read_text())
+    assert filament["nozzle_temperature"] == ["215"] and filament["hot_plate_temp"] == ["50"]
+    assert filament["filament_max_volumetric_speed"] == ["6.7"]
+
+
 def test_slicer_failure_is_reported_not_raised(fake_env, cube_stl):
     result = server.slice_model(str(cube_stl), "PLA", process_overrides={"wall_loops": 99})
     assert not result["ok"] and "simulated failure" in result["error"] and "code 3" in result["error"]

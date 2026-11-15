@@ -21,7 +21,8 @@ mcp = FastMCP(
         "slice_model with the model path, the filament the user named, and a quality and strength "
         "level that suit the part's purpose. It analyses the shape, picks presets and settings, "
         "slices, and returns the G-code path with time and filament estimates. Relay the returned "
-        "warnings to the user. Use recommend_settings first when the user wants to review choices. "
+        "warnings to the user. If the user gives figures from the spool's label, pass them as "
+        "nozzle_temp, bed_temp and max_speed. Use recommend_settings first when the user wants to review choices. "
         "Only call send_to_printer with start_print=true after the user confirms the printer is "
         "clear and loaded with the right filament."
     ),
@@ -104,12 +105,13 @@ def analyse_model(model_path: str) -> dict:
 
 
 def _plan(model_path: str | None, filament: str, quality: str, strength: str, nozzle: str, supports: str,
-          brim: str, layer_height: float | None, precise_fit: bool, smooth_top: bool, pro: bool) -> tuple[dict, dict | None]:
+          brim: str, layer_height: float | None, precise_fit: bool, smooth_top: bool, pro: bool,
+          nozzle_temp: int = 0, bed_temp: int = 0, max_speed: int = 0) -> tuple[dict, dict | None]:
     settings = load_settings()
     analysis = model.analyse(_path(model_path)) if model_path else None
     plan = recommend.recommend(
         settings.require_profiles(), filament, quality, strength, nozzle, analysis, supports, brim,
-        layer_height or None, precise_fit, smooth_top, pro)
+        layer_height or None, precise_fit, smooth_top, pro, nozzle_temp or None, bed_temp or None, max_speed or None)
     return plan, analysis
 
 
@@ -126,6 +128,9 @@ def recommend_settings(
     precise_fit: bool = False,
     smooth_top: bool = False,
     pro: bool = False,
+    nozzle_temp: int = 0,
+    bed_temp: int = 0,
+    max_speed: int = 0,
 ) -> dict:
     """Choose presets and settings for a print without slicing, with the reasoning for each choice.
 
@@ -141,10 +146,13 @@ def recommend_settings(
         precise_fit: True for parts that must mate with other parts.
         smooth_top: True to iron flat top surfaces.
         pro: True for the Creator 5 Pro.
+        nozzle_temp: Nozzle temperature in C from the spool's label, or 0 to use the preset.
+        bed_temp: Bed temperature in C from the spool's label, or 0 to use the preset.
+        max_speed: Fastest print speed in mm/s the spool's label recommends, or 0 for no extra limit.
     """
     try:
         plan, analysis = _plan(model_path, filament, quality, strength, nozzle, supports, brim,
-                               layer_height, precise_fit, smooth_top, pro)
+                               layer_height, precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed)
         return {"ok": True, "plan": plan, "model": analysis}
     except _ERRORS as exc:
         return _fail(exc)
@@ -168,6 +176,9 @@ def slice_model(
     filament_overrides: dict | None = None,
     job_name: str | None = None,
     pro: bool = False,
+    nozzle_temp: int = 0,
+    bed_temp: int = 0,
+    max_speed: int = 0,
 ) -> dict:
     """Slice a model for the Creator 5 with settings chosen for the filament and purpose.
 
@@ -191,11 +202,14 @@ def slice_model(
         filament_overrides: Extra OrcaSlicer filament settings, e.g. {"nozzle_temperature": 215}.
         job_name: Name for the output folder and files.
         pro: True for the Creator 5 Pro.
+        nozzle_temp: Nozzle temperature in C from the spool's label, or 0 to use the preset.
+        bed_temp: Bed temperature in C from the spool's label, or 0 to use the preset.
+        max_speed: Fastest print speed in mm/s the spool's label recommends, or 0 for no extra limit.
     """
     try:
         settings = load_settings()
         plan, analysis = _plan(model_path, filament, quality, strength, nozzle, supports, brim,
-                               layer_height, precise_fit, smooth_top, pro)
+                               layer_height, precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed)
         result = slicer.slice_model(settings, _path(model_path), plan, process_overrides, filament_overrides,
                                     job_name, auto_orient, copies)
         if result["settings_not_in_base_preset"]:

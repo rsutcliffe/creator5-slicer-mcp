@@ -31,6 +31,9 @@ class Material:
     presets: tuple[str, ...]          # preset base names, best first
     patterns: tuple[str, ...]         # regexes matched against the requested filament
     process: dict = field(default_factory=dict)
+    nozzle_temp: int | None = None    # deg C, when the spool's label differs from the preset
+    bed_temp: int | None = None       # deg C
+    max_speed: int | None = None      # mm/s, the fastest the maker recommends
     warps: bool = False
     flexible: bool = False
     notes: tuple[str, ...] = ()
@@ -45,6 +48,11 @@ _FIBRE = "Fibre-filled filament is stiffer but more brittle between layers; orie
 # Order matters: the first material whose pattern matches wins, so specific
 # grades sit above their plain parent.
 MATERIALS: tuple[Material, ...] = (
+    # Creality Ender PLA: label gives nozzle 190-220 C, bed 25-60 C, speed 40-80 mm/s.
+    Material("PLA_ENDER", "Creality Ender PLA", ("Generic PLA", "Flashforge PLA Basic"), (r"ender|creality",),
+             nozzle_temp=215, bed_temp=60, max_speed=80,
+             notes=("Creality Ender PLA is a standard-speed filament, so flow is capped to its labelled 80 mm/s "
+                    "and the bed is held at its labelled maximum of 60 C.",)),
     Material("PLA_SILK", "Silk PLA", ("Flashforge PLA Silk", "Generic PLA Silk"), (r"silk",),
              process={"outer_wall_speed": "60", "inner_wall_speed": "120"},
              notes=("Slow, even outer walls keep the silk sheen consistent.",),
@@ -154,8 +162,15 @@ def recommend(
     precise_fit: bool = False,
     smooth_top: bool = False,
     pro: bool = False,
+    nozzle_temp: int | None = None,
+    bed_temp: int | None = None,
+    max_speed: int | None = None,
 ) -> dict:
-    """Build a full settings plan. Pure function: nothing is written or sliced."""
+    """Build a full settings plan. Pure function: nothing is written or sliced.
+
+    nozzle_temp, bed_temp and max_speed carry the figures printed on a spool's
+    label; they take priority over the preset and over the material's defaults.
+    """
     if quality not in QUALITY:
         raise RecommendError(f"quality must be one of {', '.join(QUALITY)}")
     if strength not in STRENGTH:
@@ -281,6 +296,38 @@ def recommend(
     else:
         overrides["brim_type"] = "no_brim"
 
+    # Spool label figures ------------------------------------------------------
+    filament_overrides: dict[str, str] = {}
+    nozzle_temp = nozzle_temp or material.nozzle_temp
+    bed_temp = bed_temp or material.bed_temp
+    max_speed = max_speed or material.max_speed
+    if nozzle_temp:
+        if not 150 <= nozzle_temp <= 320:
+            raise RecommendError("nozzle_temp must be between 150 and 320 C")
+        filament_overrides["nozzle_temperature"] = str(nozzle_temp)
+        filament_overrides["nozzle_temperature_initial_layer"] = str(nozzle_temp)
+        rationale.append(f"Nozzle set to {nozzle_temp} C to match the spool.")
+    if bed_temp:
+        if not 20 <= bed_temp <= 120:
+            raise RecommendError("bed_temp must be between 20 and 120 C")
+        for plate in ("hot_plate_temp", "textured_plate_temp"):
+            filament_overrides[plate] = str(bed_temp)
+            filament_overrides[plate + "_initial_layer"] = str(bed_temp)
+        rationale.append(f"Bed set to {bed_temp} C to match the spool.")
+    if max_speed:
+        if not 10 <= max_speed <= 600:
+            raise RecommendError("max_speed must be between 10 and 600 mm/s")
+        preset = profiles.flatten(profiles_dir, "filament", filament_preset)
+        current = preset.get("filament_max_volumetric_speed")
+        current = float(current[0] if isinstance(current, list) else current or 0) or None
+        flow = round(max_speed * line_width * layer, 1)
+        if current is None or flow < current:
+            filament_overrides["filament_max_volumetric_speed"] = f"{flow:g}"
+            rationale.append(f"Flow capped at {flow:g} mm3/s, which holds normal lines to about {max_speed} mm/s. "
+                             "The slicer slows every move to stay under this cap.")
+        else:
+            rationale.append(f"The preset's own flow limit ({current:g} mm3/s) already keeps speed under {max_speed} mm/s.")
+
     return {
         "material": material.label,
         "machine_preset": machine,
@@ -288,7 +335,7 @@ def recommend(
         "filament_preset": filament_preset,
         "layer_height_mm": layer,
         "process_overrides": overrides,
-        "filament_overrides": {},
+        "filament_overrides": filament_overrides,
         "rationale": rationale,
         "warnings": warnings,
     }

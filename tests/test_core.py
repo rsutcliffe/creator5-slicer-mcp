@@ -45,7 +45,7 @@ def test_analyse_finds_overhang_and_tall_shape(mushroom_stl):
     ("black PLA", "PLA"), ("PETG", "PETG"), ("silk gold pla", "PLA_SILK"), ("TPU 95A", "TPU"),
     ("tpu 90a", "TPU_90A"), ("ABS", "ABS"), ("PLA-CF", "PLA_CF"), ("petg-cf", "PETG_CF"),
     ("nylon", "PA_CF"), ("ASA", "ASA"), ("PLA+", "PLA_PRO"), ("matte black PLA", "PLA_MATTE"),
-    ("metallic silver PETG", "PETG"),
+    ("metallic silver PETG", "PETG"), ("Creality Ender black PLA", "PLA_ENDER"), ("ender pla", "PLA_ENDER"),
 ])
 def test_match_material(text, key):
     assert recommend.match_material(text).key == key
@@ -80,6 +80,27 @@ def test_silk_keeps_its_slow_outer_wall_under_fine_quality(profiles_dir):
     plan = recommend.recommend(profiles_dir, "silk PLA", quality="fine")
     assert plan["process_overrides"]["outer_wall_speed"] == "60"
     assert plan["filament_preset"] == "Flashforge PLA Silk @FF C5"
+
+
+def test_ender_pla_follows_its_label(profiles_dir):
+    plan = recommend.recommend(profiles_dir, "Creality Ender PLA, black", strength="functional")
+    f = plan["filament_overrides"]
+    assert plan["filament_preset"] == "Generic PLA @FF C5"
+    assert f["nozzle_temperature"] == "215" and f["hot_plate_temp"] == "60" and f["textured_plate_temp_initial_layer"] == "60"
+    assert f["filament_max_volumetric_speed"] == "6.7"          # 80 mm/s x 0.42 mm x 0.2 mm
+    # Every key set must exist in the filament preset.
+    _, unknown = profiles.apply_overrides(profiles.flatten(profiles_dir, "filament", plan["filament_preset"]), f)
+    assert unknown == []
+
+
+def test_label_figures_override_and_are_validated(profiles_dir):
+    f = recommend.recommend(profiles_dir, "PLA", nozzle_temp=205, bed_temp=55, max_speed=60)["filament_overrides"]
+    assert f["nozzle_temperature"] == "205" and f["hot_plate_temp"] == "55" and f["filament_max_volumetric_speed"] == "5"
+    # A generous speed limit leaves the preset's own tighter flow cap alone.
+    assert "filament_max_volumetric_speed" not in recommend.recommend(profiles_dir, "PLA", max_speed=400)["filament_overrides"]
+    assert recommend.recommend(profiles_dir, "PLA")["filament_overrides"] == {}
+    with pytest.raises(recommend.RecommendError):
+        recommend.recommend(profiles_dir, "PLA", nozzle_temp=500)
 
 
 def test_shape_drives_supports_and_brim(profiles_dir, cube_stl, mushroom_stl):
@@ -122,7 +143,7 @@ def test_every_material_resolves_against_real_profiles(real_profiles):
                  "PLA_SPECIAL": "galaxy pla", "PLA_METAL": "metal pla", "PLA_LUMINOUS": "glow pla", "PETG_CF": "petg-cf",
                  "PET_CF": "pet-cf", "PETG_HS": "hs petg", "PETG_CLEAR": "clear petg", "ABS_GF": "abs-gf", "ASA_CF": "asa-cf",
                  "ASA_GF": "asa-gf", "TPU_64D": "tpu 64d", "TPU_90A": "tpu 90a", "PAHT_CF": "paht-cf", "PPA_CF": "ppa-cf",
-                 "PPS_CF": "pps-cf", "PA_CF": "pa-cf"}.get(material.key, material.key.lower())
+                 "PPS_CF": "pps-cf", "PA_CF": "pa-cf", "PLA_ENDER": "ender pla"}.get(material.key, material.key.lower())
         assert recommend.match_material(probe).key == material.key, probe
         for nozzle in ("0.4", "0.6", "0.8"):
             plan = recommend.recommend(real_profiles, probe, nozzle=nozzle, quality="fine", strength="structural")
@@ -135,3 +156,5 @@ def test_every_material_resolves_against_real_profiles(real_profiles):
             # Every key we set must already exist in the real base preset, apart from the one known addition.
             _, unknown = profiles.apply_overrides(process, plan["process_overrides"])
             assert set(unknown) <= {"wall_sequence"}, unknown
+            _, unknown = profiles.apply_overrides(filament, plan["filament_overrides"])
+            assert unknown == [], unknown

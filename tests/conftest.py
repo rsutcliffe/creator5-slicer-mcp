@@ -38,8 +38,11 @@ def profiles_dir(tmp_path: Path) -> Path:
     _write(ff / "filament", {"type": "filament", "name": "fdm_filament_common", "filament_diameter": ["2.85"],
                              "filament_density": ["9.99"]})
     _write(lib / "filament", {"type": "filament", "name": "Generic PLA @System", "inherits": "fdm_filament_common",
-                              "filament_type": ["PLA"], "nozzle_temperature": ["220"], "hot_plate_temp": ["60"]})
-    for name, kind, temp in (("Flashforge PLA Basic", "PLA", "210"), ("Flashforge PETG Pro", "PETG", "255"),
+                              "filament_type": ["PLA"], "nozzle_temperature": ["220"], "hot_plate_temp": ["60"],
+                              "nozzle_temperature_initial_layer": ["220"], "hot_plate_temp_initial_layer": ["60"],
+                              "textured_plate_temp": ["65"], "textured_plate_temp_initial_layer": ["65"],
+                              "filament_max_volumetric_speed": ["18"]})
+    for name, kind, temp in (("Flashforge PLA Basic", "PLA", "210"), ("Generic PLA", "PLA", "220"), ("Flashforge PETG Pro", "PETG", "255"),
                              ("Flashforge ABS Basic", "ABS", "270"), ("Flashforge TPU-95A", "TPU-95A", "230"),
                              ("Flashforge PLA Silk", "PLA", "230")):
         _write(ff / "filament", {"type": "filament", "name": f"{name} @FF C5", "inherits": "Generic PLA @System",

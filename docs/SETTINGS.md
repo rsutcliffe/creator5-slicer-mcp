@@ -53,6 +53,7 @@ For STL files the server measures the model before slicing.
 | You ask for | Preset used | Process changes | Warnings returned |
 |---|---|---|---|
 | PLA | Flashforge PLA Basic | none | none |
+| Creality Ender PLA | Generic PLA | nozzle 215 C, bed 60 C, flow capped to 80 mm/s, from the spool label | none |
 | PLA+, PLA Pro | Flashforge PLA Pro | none | none |
 | Matte, high-speed, galaxy, metal, glow PLA | matching Flashforge preset | none | none |
 | Silk PLA | Flashforge PLA Silk | outer wall 60 mm/s, inner wall 120 mm/s | weak layer bonding |
@@ -65,6 +66,18 @@ For STL files the server measures the model before slicing.
 | PVA, BVOH | matching preset | none | support material only |
 
 The purge tower is switched off for every job, because the server currently slices single-material prints.
+
+## Figures from the spool label
+
+Flashforge's filament presets are tuned for Flashforge's own spools. Other makers' filament often wants a cooler bed or a lower speed. Pass the label's figures and they take priority over the preset.
+
+| Input | Effect |
+|---|---|
+| `nozzle_temp` | sets nozzle temperature for all layers |
+| `bed_temp` | sets bed temperature for the smooth and textured plates |
+| `max_speed` | caps flow at `max_speed x line width x layer height`, so the slicer slows every move to suit |
+
+Speed is limited through the flow cap, not by editing each speed setting, because the cap also covers infill, top surfaces and any other move.
 
 ## Optional flags
 
