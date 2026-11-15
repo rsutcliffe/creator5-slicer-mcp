@@ -161,6 +161,12 @@ def _norm(value) -> str:
     return ",".join(out)
 
 
+def support_sections(gcode: Path) -> int:
+    """How many stretches of support the slicer actually printed (0 means none anywhere)."""
+    with gcode.open("r", encoding="utf-8", errors="ignore") as handle:
+        return sum(1 for line in handle if line.startswith(";TYPE:Support"))
+
+
 def settings_in_gcode(gcode: Path) -> dict[str, str]:
     """The settings block the slicer writes at the top of the G-code."""
     out: dict[str, str] = {}

@@ -36,6 +36,8 @@ def test_designer_3mf_slices_as_a_project_with_every_setting_in_the_gcode(real_e
     assert "; wall_loops = 4" in gcode and "; nozzle_temperature = 215" in gcode
     assert "; filament_settings_id = \"Generic PLA @FF C5\"\n" in gcode       # one filament, not a designer's four
     assert 15 < result["summary"]["print_time_seconds"] / 60 < 120
+    # A plain box needs no support: the setting is on, and the real slicer prints none.
+    assert result["supports_on"] and result["support_sections_in_gcode"] == 0
 
 
 def test_best_quality_uses_the_thinner_creator_5_preset(real_env):

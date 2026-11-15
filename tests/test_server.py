@@ -222,7 +222,7 @@ def test_tools_over_real_stdio_transport(fake_env, cube_stl):
 
     names, payload = asyncio.run(run())
     assert names == {"check_setup", "list_filaments", "analyse_model", "recommend_settings", "slice_model",
-                     "open_in_slicer", "save_spool"}
+                     "open_in_slicer", "save_spool", "record_print_result", "compare_with_saved_project"}
     assert payload["ok"] and payload["summary"]["print_time"] == "1h 23m"
 
 
@@ -264,3 +264,45 @@ def test_cli_slices_without_needing_quotes(fake_env, cube_stl, capsys):
     assert cli.main([str(cube_stl), "--smooth-top"]) == 0 and "ironing_type           top" in capsys.readouterr().out
 
 
+
+
+def test_supports_are_checked_in_the_gcode_not_only_the_setting(fake_env, cube_stl, mushroom_stl):
+    # The fake slicer prints no support, as the real one does when nothing needs it.
+    on = server.slice_model(str(cube_stl), "PLA", supports="on")
+    assert on["supports_on"] and on["support_sections_in_gcode"] == 0
+    assert any("none will print" in n for n in on["notes"])
+    off = server.slice_model(str(mushroom_stl), "PLA", supports="off")
+    assert not off["supports_on"] and any("over thin air" in w for w in off["plan"]["warnings"])
+    assert not any("over thin air" in w for w in server.slice_model(str(cube_stl), "PLA")["plan"]["warnings"])
+
+
+def test_print_result_is_recorded_with_what_was_changed_by_hand(fake_env, cube_stl, capsys):
+    import zipfile
+    from creator5_mcp import cli
+    job = server.slice_model(str(cube_stl), "black PLA", strength="functional")
+    # The owner turned supports on, cloned the part and saved the project from the slicer.
+    saved = Path(job["job_dir"]) / "saved.3mf"
+    with zipfile.ZipFile(job["project_3mf"]) as src, zipfile.ZipFile(saved, "w") as dst:
+        for name in src.namelist():
+            data = src.read(name)
+            if name == "Metadata/project_settings.config":
+                edited = json.loads(data); edited["enable_support"] = "1"; edited["an_extra_default"] = "x"
+                # Flash Studio pads lists to four toolheads and rewrites numbers; neither is a change.
+                edited["nozzle_temperature"] = edited["nozzle_temperature"] * 4
+                edited["line_width"] = "0.420"
+                data = json.dumps(edited).encode()
+            elif name == "3D/3dmodel.model":
+                item = next(line for line in data.decode().splitlines() if "<item " in line)
+                data = data.decode().replace(item, item + "\n" + item).encode()
+            dst.writestr(name, data)
+    assert server.compare_with_saved_project(job["project_3mf"], str(saved))["changed_by_hand"] == {
+        "settings": {"enable_support": {"written": "0", "printed": "1"}}, "parts_on_plate": {"written": 1, "printed": 2}}
+    done = server.record_print_result(job["project_3mf"], "good", "clean walls", str(saved))
+    assert done["ok"] and done["results_recorded"] == 1
+    entry = done["result"]
+    assert entry["process_preset"] == "0.20mm Standard @FF C5" and entry["changed"]["wall_loops"] == "4"
+    assert entry["changed_by_hand"]["settings"]["enable_support"]["printed"] == "1"
+    assert cli.main(["--record-result", job["project_3mf"], "--outcome", "acceptable", "--notes", "stringy", "supports"]) == 0
+    assert "2 results so far" in capsys.readouterr().out
+    assert "outcome must be" in server.record_print_result(job["project_3mf"], "perfect")["error"]
+    assert "not a slicer project" in server.record_print_result(str(cube_stl), "good")["error"]

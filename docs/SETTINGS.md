@@ -15,7 +15,7 @@ Layer height is chosen as a fraction of nozzle diameter, then snapped to the nea
 |---|---|---|---|
 | draft | 0.65 | 0.24 mm | none |
 | standard | 0.5 | 0.20 mm | none |
-| fine | 0.3 | 0.12 mm | outer wall capped at 100 mm/s; outer wall printed between inner walls when there are three or more |
+| fine | 0.3 | 0.12 mm | outer wall capped at 100 mm/s; outer wall printed between inner walls when there are three or more, with the precise wall option off (that sequence makes Flash Studio ignore the option and warn about it) |
 | best | 0.25 | 0.10 mm | as fine |
 
 Thinner layers reduce visible stepping on curves and slopes. They do not make a part meaningfully stronger, and they lengthen the print.
@@ -64,9 +64,21 @@ Supports go on by area, not by share of the surface. The PS5 holder has 112 mm²
 
 `supports` and `brim` accept `auto`, `on` or `off`. An explicit `on` or `off` beats both the designer's file and the shape check.
 
+## Evidence from prints
+
+Results are logged in `print_results.json` in the output folder. Each row here is a real print.
+
+| Date | Part | Filament | Settings | Changed by hand | Outcome |
+|---|---|---|---|---|---|
+| 15 Nov 2026 | Downloaded PS5 controller holder, two copies, 60.3 g | Black Creality Ender PLA: Generic PLA @FF C5, nozzle 215 C, bed 60 C, flow cap 6.7 mm³/s | 0.20mm Standard @FF C5, functional strength (4 walls, 25% gyroid, 6 top and 5 bottom layers), ironed top, no brim | Supports switched on; model swapped into an older project; part cloned | Good quality. Support removal, strength and fit not yet reported. |
+
+What this supports: the Ender PLA label figures, the functional strength tier and the 0.20 mm preset give a good result on this machine. What it does not cover: fine or best quality, other filaments, or more than one toolhead.
+
 ## How the result is checked
 
-The server writes the project file first, then slices that same file with Flash Studio's command line, taking every setting from the project. So the G-code, the time and the weight describe exactly what you will print from Flash Studio. After slicing, it reads the settings block at the top of the G-code and compares every value it chose. Any difference is returned in `settings_mismatched` and as a warning. The PS5 holder checked 18 of 18.
+The server writes the project file first, then slices that same file with Flash Studio's command line, taking every setting from the project. So the G-code, the time and the weight describe exactly what you will print from Flash Studio. After slicing, it reads the settings block at the top of the G-code and compares every value it chose. Any difference is returned in `settings_mismatched` and as a warning. The PS5 holder checked 19 of 19.
+
+Supports are checked in the G-code too. `support_sections_in_gcode` counts the stretches of support the slicer printed. If supports are on and the slicer generated none, a note says so. If supports are off and more than 25 mm² of underside is flatter than the support angle, a warning says the part will print over thin air.
 
 ## Filament families
 

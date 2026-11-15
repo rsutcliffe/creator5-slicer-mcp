@@ -239,6 +239,11 @@ def recommend(
         overrides["outer_wall_speed"] = f"{min(current, 100):g}"
         if walls >= 3:
             overrides["wall_sequence"] = "inner-outer-inner wall"
+            # This sequence makes the slicer ignore the precise wall option and warn about it on load,
+            # so switch the option off to match (seen in Flash Studio, 15 Nov 2026).
+            # Some presets leave it unset, and the slicer's own default is on.
+            if base.get("precise_outer_wall") != "0":
+                overrides["precise_outer_wall"] = "0"
             rationale.append(f"{quality.capitalize()} quality: outer wall capped at 100 mm/s and printed between inner walls for a cleaner surface.")
         else:
             rationale.append(f"{quality.capitalize()} quality: outer wall capped at 100 mm/s for a cleaner surface.")

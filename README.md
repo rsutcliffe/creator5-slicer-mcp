@@ -6,7 +6,7 @@ Say what the part is for and what filament is loaded. The server measures the mo
 
 It is a thin layer over the slicer's own command line. It is not a fork of OrcaSlicer, so there is no C++ to build and slicer updates need no merging.
 
-> **Status: early.** Confirmed with Flash Studio 1.7 on macOS: choosing settings, writing the project, and slicing it with Flash Studio's command line, for single and four-colour models. A finished print from these settings has not yet been assessed. See [docs/HANDOVER.md](docs/HANDOVER.md).
+> **Status: early.** Confirmed with Flash Studio 1.7 on macOS: choosing settings, writing the project, slicing it with Flash Studio's command line for single and four-colour models, and opening it in Flash Studio ready to slice. One print has been reported, with good quality. See [docs/HANDOVER.md](docs/HANDOVER.md).
 
 ## What you need
 
@@ -82,6 +82,8 @@ python3 -m venv .venv
 | `check_setup` | Confirms the slicer and the Creator 5 presets are in place |
 | `list_filaments` | Lists the filament types understood, the presets installed and the saved spools |
 | `save_spool` | Remembers a spool and its label figures under a name |
+| `record_print_result` | Records how a print came out, with its settings and anything changed by hand |
+| `compare_with_saved_project` | Shows what you changed in Flash Studio, against the project the server wrote |
 | `analyse_model` | Measures an STL, OBJ or 3MF: size, volume, bed contact, overhangs, parts, toolheads used, fit on the 256 mm bed |
 | `recommend_settings` | Returns the chosen presets and settings with reasons, without slicing |
 | `slice_model` | Analyses, chooses settings, writes the project, slices it, and confirms each setting reached the G-code |
@@ -124,6 +126,14 @@ Save a spool once with the figures from its label, and its name is enough afterw
 ```
 
 A request for `the black PLA` then uses that material, those temperatures, that speed limit and that colour. A figure given with a request beats the register. The register is `spools.json` in the output folder.
+
+## Learning from prints
+
+When a print is done, say how it went. `record_print_result` keeps the outcome with the project's presets and changed settings in `print_results.json` in the output folder. If you edited the project in Flash Studio and saved it, pass that file too: what you changed by hand (supports switched on, a part cloned, the model swapped) is recorded alongside. Settings changes can then point at real prints.
+
+```bash
+.venv/bin/python -m creator5_mcp.cli --record-result PROJECT.3mf --outcome good --notes clean walls, supports came off easily
+```
 
 ## Multi-colour models
 

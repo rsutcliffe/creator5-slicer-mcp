@@ -39,6 +39,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--save-spool", nargs="+", metavar="NAME",
                         help="remember a spool under this name, with --filament and the label figures, then exit")
     parser.add_argument("--colour", default="", help="with --save-spool: a colour word or hex value")
+    parser.add_argument("--record-result", metavar="PROJECT", help="record how this project printed, then exit")
+    parser.add_argument("--outcome", default="good", choices=["good", "acceptable", "failed"], help="with --record-result")
+    parser.add_argument("--notes", nargs="+", default=[], help="with --record-result: what happened, in plain words")
+    parser.add_argument("--printed-project", metavar="PROJECT",
+                        help="with --record-result: the project as saved from the slicer, to record what was changed by hand")
     args = parser.parse_args(argv)
 
     if args.save_spool:
@@ -46,6 +51,10 @@ def main(argv: list[str] | None = None) -> int:
                                   args.max_speed, args.colour)
         print(f"Saved spool: {saved['spool']}" if saved["ok"] else "FAILED: " + saved["error"])
         return 0 if saved["ok"] else 1
+    if args.record_result:
+        done = server.record_print_result(args.record_result, args.outcome, " ".join(args.notes), args.printed_project)
+        print(f"Recorded: {done['result']['outcome']} ({done['results_recorded']} results so far)" if done["ok"] else "FAILED: " + done["error"])
+        return 0 if done["ok"] else 1
     if not args.model:
         parser.error("give the path to a model file")
 
@@ -71,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {key:<22} {value}")
     print(f"  Print time {summary.get('print_time', '?')}   Filament {summary.get('filament_used_g', '?')} g")
     print(f"  Checked    {result['settings_checked_in_gcode']} settings read back from the G-code")
+    print(f"  Supports   {'on' if result['supports_on'] else 'off'}, {result['support_sections_in_gcode']} stretches in the G-code")
     for warning in plan["warnings"] + result["notes"]:
         print("  NOTE: " + warning)
     print("  Project    " + result["project_3mf"])

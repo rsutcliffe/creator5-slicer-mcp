@@ -13,7 +13,7 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import __version__, model, profiles, project, recommend, slicer, spools
+from . import __version__, model, profiles, project, recommend, results, slicer, spools
 from .config import ConfigError, load_settings
 
 mcp = FastMCP(
@@ -28,13 +28,14 @@ mcp = FastMCP(
         "warnings to the user. If the user gives figures from the spool's label, pass them as "
         "nozzle_temp, bed_temp and max_speed, and offer to keep them with save_spool so the spool's name is "
         "enough next time. For a multi-colour model, pass the filaments in toolheads 2 to 4 as other_filaments. "
-        "Use recommend_settings first when the user wants to review choices. The user prints from Flash Studio; "
+        "Use recommend_settings first when the user wants to review choices. When the user says how a print "
+        "came out, call record_print_result. The user prints from Flash Studio; "
         "this server never sends anything to the printer."
     ),
 )
 
 _ERRORS = (ConfigError, profiles.ProfileError, model.ModelError, recommend.RecommendError,
-           slicer.SliceError, project.ProjectError)
+           slicer.SliceError, project.ProjectError, results.ResultError)
 
 
 def _fail(exc: Exception) -> dict:
@@ -114,6 +115,43 @@ def save_spool(name: str, filament: str, nozzle_temp: int = 0, bed_temp: int = 0
         recommend.match_material(filament)   # refuse a material this server cannot place
         return {"ok": True, "spool": spools.save(settings.output_dir, name, filament, nozzle_temp, bed_temp, max_speed, colour)}
     except _ERRORS + (ValueError,) as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def record_print_result(project_3mf: str, outcome: str, notes: str = "", printed_project: str | None = None) -> dict:
+    """Record how a print came out, so settings can be corrected from real prints.
+
+    Call this when the user says how a print went. The record keeps the project's presets and
+    changed settings with the outcome, in print_results.json in the output folder.
+
+    Args:
+        project_3mf: The project_3mf path slice_model returned for the job that was printed.
+        outcome: good, acceptable or failed.
+        notes: What the user said: first layer, walls, support removal, strength, fit, anything changed by hand.
+        printed_project: Optional path to the project as the user saved it from Flash Studio after editing it.
+            What differs from project_3mf is recorded as changed by hand.
+    """
+    try:
+        settings = load_settings()
+        entry = results.record(settings.output_dir, _path(project_3mf), outcome, notes,
+                               _path(printed_project) if printed_project else None)
+        return {"ok": True, "result": entry, "results_recorded": len(results.load(settings.output_dir))}
+    except _ERRORS as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def compare_with_saved_project(project_3mf: str, saved_project: str) -> dict:
+    """Show what the user changed by hand: the project this server wrote against the one saved from Flash Studio.
+
+    Args:
+        project_3mf: The project_3mf path slice_model returned.
+        saved_project: The project the user saved from Flash Studio after editing it.
+    """
+    try:
+        return {"ok": True, "changed_by_hand": results.differences(_path(project_3mf), _path(saved_project))}
+    except _ERRORS as exc:
         return _fail(exc)
 
 
@@ -356,7 +394,17 @@ def slice_model(
             plan["warnings"].append(
                 "These override keys are not in the base preset and may be misspelt: "
                 + ", ".join(made["unknown_override_keys"]))
+        # The setting says what was asked for; the G-code says what will print.
+        supports_printed = slicer.support_sections(Path(result["gcode"]))
+        supports_on = made["settings"].get("enable_support") == "1"
+        if supports_on and not supports_printed:
+            result["notes"].append("Supports are on, but the slicer found nothing that needs them, so none will print.")
+        elif not supports_on and analysis.get("overhang_area_mm2", 0) > recommend.OVERHANG_MM2:
+            plan["warnings"].append(
+                f"Supports are off, but {analysis['overhang_area_mm2']:g} mm² of the underside is flatter than "
+                f"{analysis['support_angle']:g} degrees and will print over thin air. Turn supports on unless that is intended.")
         return {"ok": True, "project_3mf": made["project"], **result, "objects": made["objects"],
+                "supports_on": supports_on, "support_sections_in_gcode": supports_printed,
                 "settings_checked_in_gcode": len(expected) - len(mismatched), "settings_mismatched": mismatched,
                 "plan": plan, "model": analysis}
     except _ERRORS as exc:

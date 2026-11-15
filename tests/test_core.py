@@ -71,6 +71,7 @@ def test_quality_picks_layer_height(profiles_dir):
     assert best["process_overrides"]["outer_wall_speed"] == "100" and any("Best quality" in r for r in best["rationale"])
     fine = recommend.recommend(profiles_dir, "PLA", quality="fine")["process_overrides"]
     assert fine["outer_wall_speed"] == "100" and fine["wall_sequence"] == "inner-outer-inner wall"
+    assert fine["precise_outer_wall"] == "0"      # or Flash Studio warns that the option is ignored
 
 
 def test_shell_layers_follow_layer_height(profiles_dir):
@@ -235,6 +236,6 @@ def test_every_material_resolves_against_real_profiles(real_profiles):
             assert filament["filament_diameter"] == ["1.75"] * len(filament["filament_diameter"]), plan["filament_preset"]
             # Every key we set must already exist in the real base preset, apart from the one known addition.
             _, unknown = profiles.apply_overrides(process, plan["process_overrides"])
-            assert set(unknown) <= {"wall_sequence"}, unknown
+            assert set(unknown) <= {"wall_sequence", "precise_outer_wall"}, unknown
             _, unknown = profiles.apply_overrides(filament, plan["filament_overrides"])
             assert unknown == [], unknown

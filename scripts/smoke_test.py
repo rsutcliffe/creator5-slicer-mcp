@@ -2,10 +2,11 @@
 """Slice a 20 mm test cube with the real slicer to confirm the whole chain works.
 
 Run this once after installing:  python scripts/smoke_test.py
-It writes into the normal output folder and prints what the slicer produced.
+It writes into a throwaway folder and prints what the slicer produced.
 """
 
 import json
+import os
 import struct
 import sys
 import tempfile
@@ -28,6 +29,8 @@ def cube(path: Path, size: float = 20.0) -> Path:
 
 
 def main() -> int:
+    # A throwaway folder, so test runs do not pile up among real print jobs.
+    os.environ.setdefault("C5_OUTPUT_DIR", tempfile.mkdtemp(prefix="creator5_smoke_"))
     setup = server.check_setup()
     print(json.dumps(setup, indent=2))
     if not setup["ok"]:
