@@ -198,6 +198,7 @@ def test_cli_slices_without_needing_quotes(fake_env, cube_stl, capsys):
     assert "Creality Ender PLA" in out and "wall_loops             4" in out and "nozzle_temperature     215" in out
     assert "1h 23m" in out and "15.25 g" in out
     assert cli.main(["/nope.stl", "--filament", "PLA"]) == 1 and "FAILED" in capsys.readouterr().out
+    assert cli.main([str(cube_stl), "--smooth-top"]) == 0 and "ironing_type           top" in capsys.readouterr().out
 
 
 def test_cli_copies_gcode_and_reports_missing_usb(fake_env, cube_stl, tmp_path, capsys, monkeypatch):

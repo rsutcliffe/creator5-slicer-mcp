@@ -52,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bed-temp", type=int, default=0)
     parser.add_argument("--max-speed", type=int, default=0)
     parser.add_argument("--auto-orient", action="store_true")
+    parser.add_argument("--smooth-top", action="store_true", help="iron flat top surfaces for a smoother finish")
+    parser.add_argument("--precise-fit", action="store_true", help="tighter outer dimensions for mating parts")
     parser.add_argument("--open", action="store_true", help="show the result in the slicer's preview when done")
     parser.add_argument("--usb", action="store_true", help="copy the G-code to the USB stick that is plugged in")
     parser.add_argument("--copy-to", metavar="FOLDER", help="copy the G-code to this folder")
@@ -78,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     result = server.slice_model(
         args.model, " ".join(args.filament).replace("-", " "), args.quality, args.strength, args.nozzle,
         args.supports, args.brim, copies=args.copies, auto_orient=args.auto_orient,
+        smooth_top=args.smooth_top, precise_fit=args.precise_fit,
         nozzle_temp=args.nozzle_temp, bed_temp=args.bed_temp, max_speed=args.max_speed)
     if not result["ok"]:
         print("FAILED: " + result["error"])
@@ -86,8 +89,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Sliced {args.copies} x {args.model}")
     print(f"  Material   {plan['material']}  ({plan['filament_preset']})")
     print(f"  Process    {plan['process_preset']}")
-    for key in ("wall_loops", "sparse_infill_density", "sparse_infill_pattern", "enable_support", "brim_type"):
-        print(f"  {key:<22} {plan['process_overrides'][key]}")
+    for key in ("wall_loops", "sparse_infill_density", "sparse_infill_pattern", "enable_support", "brim_type", "ironing_type"):
+        if key in plan["process_overrides"]:
+            print(f"  {key:<22} {plan['process_overrides'][key]}")
     for key, value in plan["filament_overrides"].items():
         if not key.endswith("_initial_layer") and not key.startswith("textured"):
             print(f"  {key:<22} {value}")
