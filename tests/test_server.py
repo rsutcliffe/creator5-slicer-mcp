@@ -110,3 +110,31 @@ def test_tools_over_real_stdio_transport(fake_env, cube_stl):
     assert names == {"check_setup", "list_filaments", "analyse_model", "recommend_settings", "slice_model",
                      "open_in_slicer", "printer_status", "send_to_printer"}
     assert payload["ok"] and payload["summary"]["print_time"] == "1h 23m"
+
+
+def test_claude_desktop_installer_merges_and_backs_up(tmp_path, monkeypatch):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "installer", Path(__file__).parents[1] / "scripts" / "install_claude_desktop.py")
+    installer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(installer)
+    config = tmp_path / "Claude" / "claude_desktop_config.json"
+    config.parent.mkdir()
+    config.write_text(json.dumps({"theme": "dark", "mcpServers": {
+        "other": {"command": "x"}, "creator5-slicer": {"command": "/old", "env": {"C5_PRINTER_IP": "1.2.3.4"}}}}))
+    monkeypatch.setenv("CLAUDE_DESKTOP_CONFIG", str(config))
+    monkeypatch.setattr(installer, "server_command", lambda: Path("/venv/bin/creator5-slicer-mcp"))
+    assert installer.main() == 0 and installer.main() == 0      # safe to run twice
+    data = json.loads(config.read_text())
+    assert data["theme"] == "dark" and data["mcpServers"]["other"] == {"command": "x"}
+    assert data["mcpServers"]["creator5-slicer"] == {"command": "/venv/bin/creator5-slicer-mcp",
+                                                     "env": {"C5_PRINTER_IP": "1.2.3.4"}}
+    assert list(config.parent.glob("*.backup-*"))
+    # A missing config file is created; a broken one is left untouched.
+    config.unlink()
+    assert installer.main() == 0 and "creator5-slicer" in json.loads(config.read_text())["mcpServers"]
+    config.write_text("{not json")
+    import pytest
+    with pytest.raises(SystemExit, match="Nothing was changed"):
+        installer.main()
+    assert config.read_text() == "{not json"

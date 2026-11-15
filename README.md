@@ -49,16 +49,22 @@ pipx install git+https://github.com/rsutcliffe/creator5-slicer-mcp
 
 The three `C5_PRINTER_*` values are only needed for sending files to the printer. Leave the `env` block out to slice only.
 
-### Check it works
+### Install from a local clone
+
+Use this route if you want to edit the settings tables. None of these commands need quotation marks.
 
 ```bash
 git clone https://github.com/rsutcliffe/creator5-slicer-mcp
 cd creator5-slicer-mcp
-pip install -e .
-python scripts/smoke_test.py
+python3 -m venv .venv
+.venv/bin/pip install -e .
+.venv/bin/python scripts/smoke_test.py
+.venv/bin/python scripts/install_claude_desktop.py
 ```
 
-This slices a 20 mm cube with your real slicer and prints the result. If it fails, the message names the log file to look at.
+`smoke_test.py` slices a 20 mm cube with your real slicer and prints the result. If it fails, the message names the log file to look at.
+
+`install_claude_desktop.py` adds the server to Claude Desktop's configuration. It keeps your existing settings, saves a backup first, and is safe to run again. Quit and reopen Claude Desktop afterwards.
 
 ## Configuration
 
