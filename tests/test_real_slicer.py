@@ -60,3 +60,14 @@ def test_multi_colour_project_prints_each_part_with_its_own_toolhead(real_env, c
     used = next(line for line in gcode.splitlines() if line.startswith("; filament used [g]"))
     grams = [float(v) for v in used.split("=")[1].split(",")]
     assert len(grams) == 3 and all(g > 0 for g in grams), used
+
+
+def test_each_toolhead_keeps_its_own_filament_settings(real_env, colour_3mf):
+    """Toolhead 1 has label figures; toolheads 2 and 3 must keep their own presets' values, not copy them."""
+    from creator5_mcp import server
+    result = server.slice_model(str(colour_3mf), "ender pla", other_filaments=["PLA", "PETG"])
+    assert result["ok"], result
+    assert result["settings_mismatched"] == [], result["settings_mismatched"]
+    gcode = Path(result["gcode"]).read_text(errors="ignore")
+    assert "; nozzle_temperature = 215,210,255" in gcode
+    assert "; filament_max_volumetric_speed = 6.7," in gcode and "; filament_max_volumetric_speed = 6.7,6.7" not in gcode

@@ -100,6 +100,21 @@ def test_spool_register_fills_in_the_label_and_colour(fake_env, cube_stl, capsys
     assert _project_settings(server.slice_model(str(cube_stl), "white PLA"))["nozzle_temperature"] == ["210"]
 
 
+def test_a_proven_flow_limit_holds_at_every_layer_height(fake_env, cube_stl):
+    server.save_spool("black pla", "ender pla", 215, 60, 80, "black", max_flow=6.7)
+    for quality in ("standard", "fine"):       # 0.2 mm and 0.12 mm layers
+        settings = _project_settings(server.slice_model(str(cube_stl), "black pla", quality=quality))
+        assert settings["filament_max_volumetric_speed"] == ["6.7"], quality
+    # Without the proven limit the label's speed gives a cap that shrinks with the layer.
+    server.save_spool("black pla", "ender pla", 215, 60, 80, "black")
+    assert _project_settings(server.slice_model(str(cube_stl), "black pla", quality="fine"))["filament_max_volumetric_speed"] == ["4"]
+    # A speed given with the request beats the saved flow limit; a silly limit is refused.
+    server.save_spool("black pla", "ender pla", max_flow=6.7)
+    assert _project_settings(server.slice_model(str(cube_stl), "black pla", max_speed=40))["filament_max_volumetric_speed"] == ["3.4"]
+    server.save_spool("black pla", "ender pla", max_flow=500)
+    assert "max_flow" in server.slice_model(str(cube_stl), "black pla")["error"]
+
+
 def test_multi_colour_3mf_keeps_objects_parts_and_toolheads(fake_env, colour_3mf):
     import zipfile
     result = server.slice_model(str(colour_3mf), "black PLA", other_filaments=["white PETG"], copies=2)
@@ -111,6 +126,7 @@ def test_multi_colour_3mf_keeps_objects_parts_and_toolheads(fake_env, colour_3mf
     assert settings["filament_colour"] == ["#161616", "#F2F2F2", "#C89B3C"]
     assert settings["nozzle_temperature"] == ["210", "255", "210"] and settings["filament_diameter"] == ["1.75"] * 3
     assert settings["enable_prime_tower"] == "1" and len(settings["different_settings_to_system"]) == 5
+    assert settings["filament_self_index"] == ["1", "2", "3"]
     assert settings["inherits_group"] == [""] * 5
     assert any("toolhead 3 (#C89B3C)" in w for w in result["plan"]["warnings"])
     assert any("Dry the spool" in w for w in result["plan"]["warnings"])          # PETG's warning carried over
@@ -154,6 +170,11 @@ def test_crash_after_complete_gcode_is_usable_but_noted(fake_env, cube_stl):
     result = server.slice_model(str(cube_stl), "PLA", process_overrides={"wall_loops": 97})
     assert result["ok"] and result["gcode_complete"] and result["exit_code"] != 0
     assert "complete" in result["notes"][0]
+
+
+def test_rejected_settings_file_is_an_error_not_a_default_print(fake_env, cube_stl):
+    result = server.slice_model(str(cube_stl), "PLA", process_overrides={"wall_loops": 95})
+    assert not result["ok"] and "could not read the project's settings" in result["error"]
 
 
 def test_unfinished_gcode_is_rejected(fake_env, cube_stl):

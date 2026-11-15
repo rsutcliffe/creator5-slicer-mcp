@@ -169,6 +169,7 @@ def recommend(
     max_speed: int | None = None,
     designer: dict | None = None,
     toolheads: int = 1,
+    max_flow: float | None = None,
 ) -> dict:
     """Build a full settings plan. Pure function: nothing is written or sliced.
 
@@ -177,6 +178,7 @@ def recommend(
     designer holds the shape-dependent settings saved in the model's 3MF
     (model.designer_settings); with supports or brim on auto they are followed.
     toolheads is how many filaments the job uses; above one, the purge tower stays on.
+    max_flow is the spool's proven flow limit in mm3/s; it replaces the cap worked out from max_speed.
     """
     if quality not in QUALITY:
         raise RecommendError(f"quality must be one of {', '.join(QUALITY)}")
@@ -356,7 +358,20 @@ def recommend(
             filament_overrides[plate] = str(bed_temp)
             filament_overrides[plate + "_initial_layer"] = str(bed_temp)
         rationale.append(f"Bed set to {bed_temp} C to match the spool.")
-    if max_speed:
+    if max_flow:
+        # A filament's limit is how fast it melts, which does not change with layer height. A cap
+        # worked out from the label's speed halves at half the layer height; a proven one does not.
+        if not 1 <= max_flow <= 60:
+            raise RecommendError("max_flow must be between 1 and 60 mm3/s")
+        preset = profiles.flatten(profiles_dir, "filament", filament_preset)
+        current = preset.get("filament_max_volumetric_speed")
+        current = float(current[0] if isinstance(current, list) else current or 0) or None
+        if current is None or max_flow < current:
+            filament_overrides["filament_max_volumetric_speed"] = f"{max_flow:g}"
+            rationale.append(f"Flow capped at {max_flow:g} mm3/s, this spool's proven limit, at every layer height.")
+        else:
+            rationale.append(f"The preset's own flow limit ({current:g} mm3/s) is already under this spool's {max_flow:g} mm3/s.")
+    elif max_speed:
         if not 10 <= max_speed <= 600:
             raise RecommendError("max_speed must be between 10 and 600 mm/s")
         preset = profiles.flatten(profiles_dir, "filament", filament_preset)

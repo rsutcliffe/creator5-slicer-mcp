@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--save-spool", nargs="+", metavar="NAME",
                         help="remember a spool under this name, with --filament and the label figures, then exit")
     parser.add_argument("--colour", default="", help="with --save-spool: a colour word or hex value")
+    parser.add_argument("--max-flow", type=float, default=0, help="with --save-spool: a proven flow limit in mm3/s")
     parser.add_argument("--record-result", metavar="PROJECT", help="record how this project printed, then exit")
     parser.add_argument("--outcome", default="good", choices=["good", "acceptable", "failed"], help="with --record-result")
     parser.add_argument("--notes", nargs="+", default=[], help="with --record-result: what happened, in plain words")
@@ -48,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.save_spool:
         saved = server.save_spool(_words(args.save_spool), _words(args.filament), args.nozzle_temp, args.bed_temp,
-                                  args.max_speed, args.colour)
+                                  args.max_speed, args.colour, args.max_flow)
         print(f"Saved spool: {saved['spool']}" if saved["ok"] else "FAILED: " + saved["error"])
         return 0 if saved["ok"] else 1
     if args.record_result:

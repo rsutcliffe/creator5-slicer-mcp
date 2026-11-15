@@ -99,7 +99,7 @@ def list_filaments(nozzle: str = "0.4", pro: bool = False) -> dict:
 
 @mcp.tool()
 def save_spool(name: str, filament: str, nozzle_temp: int = 0, bed_temp: int = 0, max_speed: int = 0,
-               colour: str = "") -> dict:
+               colour: str = "", max_flow: float = 0) -> dict:
     """Remember a spool and its label figures, so its name alone is enough in later requests.
 
     Args:
@@ -109,11 +109,13 @@ def save_spool(name: str, filament: str, nozzle_temp: int = 0, bed_temp: int = 0
         bed_temp: Bed temperature in C from the label, or 0 to use the preset.
         max_speed: Fastest print speed in mm/s on the label, or 0 for no extra limit.
         colour: A colour word such as "black", or a hex value such as "#161616".
+        max_flow: Flow limit in mm3/s proven by a good print or a flow test, or 0. When set it is used at
+            every layer height, in place of the cap worked out from max_speed.
     """
     try:
         settings = load_settings()
         recommend.match_material(filament)   # refuse a material this server cannot place
-        return {"ok": True, "spool": spools.save(settings.output_dir, name, filament, nozzle_temp, bed_temp, max_speed, colour)}
+        return {"ok": True, "spool": spools.save(settings.output_dir, name, filament, nozzle_temp, bed_temp, max_speed, colour, max_flow)}
     except _ERRORS + (ValueError,) as exc:
         return _fail(exc)
 
@@ -177,9 +179,12 @@ def _spool(settings, text: str, nozzle_temp: int = 0, bed_temp: int = 0, max_spe
     saved = spools.find(settings.output_dir, text)
     said = project.colour_for(text, "")
     if not saved:
-        return {"filament": text, "nozzle_temp": nozzle_temp, "bed_temp": bed_temp, "max_speed": max_speed, "colour": said, "note": None}
+        return {"filament": text, "nozzle_temp": nozzle_temp, "bed_temp": bed_temp, "max_speed": max_speed, "max_flow": 0,
+                "colour": said, "note": None}
     return {"filament": saved["filament"], "nozzle_temp": nozzle_temp or saved["nozzle_temp"],
             "bed_temp": bed_temp or saved["bed_temp"], "max_speed": max_speed or saved["max_speed"],
+            # A speed given with the request is the newer instruction, so it beats the saved flow limit.
+            "max_flow": 0 if max_speed else saved.get("max_flow", 0),
             "colour": said or project.colour_for(saved["colour"], ""),
             "note": f"Spool '{saved['name']}' from the register: {saved['filament']}."}
 
@@ -211,7 +216,7 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
     plan = recommend.recommend(
         profiles_dir, first["filament"], quality, strength, nozzle, analysis, supports, brim,
         layer_height or None, precise_fit, smooth_top, pro, first["nozzle_temp"] or None, first["bed_temp"] or None,
-        first["max_speed"] or None, designer, toolheads)
+        first["max_speed"] or None, designer, toolheads, first["max_flow"] or None)
     file_colours = shape.get("colours", []) if toolheads > 1 else []
     slots, unnamed = [], []
     for i in range(toolheads):
@@ -222,7 +227,8 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
             # Same layer height and line width as the main plan, so flow caps agree.
             sub = recommend.recommend(profiles_dir, spool["filament"], quality, strength, nozzle, None,
                                       layer_height=plan["layer_height_mm"], pro=pro, nozzle_temp=spool["nozzle_temp"] or None,
-                                      bed_temp=spool["bed_temp"] or None, max_speed=spool["max_speed"] or None)
+                                      bed_temp=spool["bed_temp"] or None, max_speed=spool["max_speed"] or None,
+                                      max_flow=spool["max_flow"] or None)
             preset, overrides, material = sub["filament_preset"], sub["filament_overrides"], sub["material"]
             plan["warnings"] += [w for w in sub["warnings"] if w not in plan["warnings"]]
             # The other material's own process needs: the slower speed wins, and nothing already chosen is replaced.

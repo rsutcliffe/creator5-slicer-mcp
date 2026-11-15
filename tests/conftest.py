@@ -167,6 +167,8 @@ with zipfile.ZipFile(args[-1]) as z:
     process = json.loads(z.read("Metadata/project_settings.config"))
 if process.get("wall_loops") == "99":
     sys.stderr.write("simulated failure\n"); sys.exit(3)
+if process.get("wall_loops") == "95":          # settings file rejected: the real slicer carries on with defaults
+    print("[error]   load_from_json: parse _temp_3.config error, invalid json array for x")
 if process.get("wall_loops") == "96":          # a setting the slicer did not honour
     process["wall_loops"] = "2"
 block = "".join(f"; {k} = {','.join(v) if isinstance(v, list) else v}\n" for k, v in process.items())

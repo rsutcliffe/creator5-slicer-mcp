@@ -127,6 +127,8 @@ Save a spool once with the figures from its label, and its name is enough afterw
 
 A request for `the black PLA` then uses that material, those temperatures, that speed limit and that colour. A figure given with a request beats the register. The register is `spools.json` in the output folder.
 
+Once a spool has printed well, or you have run a flow test, add `--max-flow` with the flow in mm³/s. That proven limit is then used at every layer height. Without it the cap is worked out from the label's top speed, which halves at half the layer height and makes fine prints slower than they need to be.
+
 ## Learning from prints
 
 When a print is done, say how it went. `record_print_result` keeps the outcome with the project's presets and changed settings in `print_results.json` in the output folder. If you edited the project in Flash Studio and saved it, pass that file too: what you changed by hand (supports switched on, a part cloned, the model swapped) is recorded alongside. Settings changes can then point at real prints.
@@ -138,6 +140,8 @@ When a print is done, say how it went. `record_print_result` keeps the outcome w
 ## Multi-colour models
 
 The Creator 5 has four toolheads. A 3MF that assigns its parts to different filaments keeps its objects, its parts and those assignments, whether it was saved by Bambu Studio, OrcaSlicer or Flash Studio, or is a plain 3MF with colours as base materials. Colour painting on a Bambu or Orca model is kept too.
+
+`models/two_colour_test/build_test.py` writes a small two-colour test piece (two blocks side by side, about 12 minutes and 4 g). Print it before a long multi-colour job to prove toolhead changes and the purge tower.
 
 Name the filament in each toolhead: `filament` for toolhead 1, `other_filaments` for the rest. If you name fewer than the model uses, the others get toolhead 1's filament in the model's own colours, and a warning lists which colour to load where. The purge tower is switched on for these jobs.
 

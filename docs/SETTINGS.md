@@ -72,7 +72,7 @@ Results are logged in `print_results.json` in the output folder. Each row here i
 |---|---|---|---|---|---|
 | 15 Nov 2026 | Downloaded PS5 controller holder, two copies, 60.3 g | Black Creality Ender PLA: Generic PLA @FF C5, nozzle 215 C, bed 60 C, flow cap 6.7 mm³/s | 0.20mm Standard @FF C5, functional strength (4 walls, 25% gyroid, 6 top and 5 bottom layers), ironed top, no brim | Supports switched on; model swapped into an older project; part cloned | Good quality. Support removal, strength and fit not yet reported. |
 
-What this supports: the Ender PLA label figures, the functional strength tier and the 0.20 mm preset give a good result on this machine. What it does not cover: fine or best quality, other filaments, or more than one toolhead.
+What this supports: the Ender PLA label figures, the functional strength tier and the 0.20 mm preset give a good result on this machine. What it does not cover: fine or best quality, other filaments, or more than one toolhead. At fine and best the flow per second is now the same as in this print, but the line speed is higher, so the first fine or best print should be watched.
 
 ## How the result is checked
 
@@ -122,6 +122,12 @@ Flashforge's filament presets are tuned for Flashforge's own spools. Other maker
 | `max_speed` | caps flow at `max_speed x line width x layer height`, so the slicer slows every move to suit |
 
 Speed is limited through the flow cap, not by editing each speed setting, because the cap also covers infill, top surfaces and any other move.
+
+### A proven flow limit beats the label's speed
+
+A cap worked out from the label's speed shrinks with the layer: 80 mm/s gives 6.7 mm³/s at 0.20 mm but only 3.4 at 0.10 mm. A filament's real limit is how fast it melts, which does not depend on layer height. So a spool can carry `max_flow`, a limit proven by a print or a flow test, and that is used at every layer height.
+
+The black Ender PLA spool has `max_flow` 6.7 mm³/s, proven by the good print of 15 November 2026. On the PS5 holder this cut best quality from 2h 51m to 2h 26m and fine from 2h 11m to 1h 42m. A flow test in Flash Studio (Calibration menu) could raise it further.
 
 ## Optional flags
 

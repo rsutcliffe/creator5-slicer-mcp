@@ -105,7 +105,10 @@ def project_settings(profiles_dir: Path, plan: dict, extra_process: dict | None 
         merged.update({k: v for k, v in preset.items() if k not in _NOT_SETTINGS})
     # Filament settings hold one value per toolhead.
     for key in {k for flat in filaments for k in flat if k not in _NOT_SETTINGS}:
-        values = [flat.get(key, filaments[0].get(key)) for flat in filaments]
+        # A preset that leaves a key out borrows the value of one that has it: a gap in the list
+        # makes the slicer reject the whole settings file and fall back to its defaults.
+        known = next(flat[key] for flat in filaments if flat.get(key) is not None)
+        values = [flat.get(key) if flat.get(key) is not None else known for flat in filaments]
         merged[key] = [v[0] if isinstance(v, list) and v else v for v in values] if any(isinstance(v, list) for v in values) else values[0]
     merged.update({
         "name": "project_settings",
@@ -115,6 +118,9 @@ def project_settings(profiles_dir: Path, plan: dict, extra_process: dict | None 
         "print_settings_id": plan["process_preset"],
         "filament_settings_id": [slot["preset"] for slot in slots],
         "filament_colour": [slot["colour"] for slot in slots],
+        # Which toolhead each entry of a filament setting belongs to. Without it the slicer reads
+        # toolhead 1's values for every toolhead (seen in the G-code; Flash Studio writes it on save).
+        "filament_self_index": [str(i + 1) for i in range(len(slots))],
         # One entry each for: process, every filament, printer.
         "inherits_group": [""] * (len(slots) + 2),
         "different_settings_to_system": [";".join(sorted(process_over)), *changed, ""],

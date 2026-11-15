@@ -33,12 +33,16 @@ Proven on the owner's Mac:
 | Spool register | `black pla` saved in `~/Creator5Prints/spools.json`; the request `black-pla` resolved to Creality Ender PLA at 215/60 C |
 | Project opens on screen, ready to print | Owner's screenshot, 15 Nov: `open_in_slicer` opened the PS5 holder in a new window with no import dialog; Prepare tab; Flashforge Creator 5; `* Generic PLA`; `0.10mm Standard @FF C5` with its changed tabs marked; model on the plate; Slice plate enabled. A first attempt showed a warning that the precise wall option is ignored; after the fix a second screenshot shows no warning |
 | A real print, good quality | Two downloaded PS5 holders, black Ender PLA, 0.20 mm, functional strength; logged in `~/Creator5Prints/print_results.json` and `docs/SETTINGS.md` |
+| The MCP protocol path, new code | A separate server process called over stdio by an MCP client: `check_setup`, `slice_model` with `other_filaments`, then `open_in_slicer`, against the real Flash Studio. The two-colour test piece sliced (11 min, 1.95 g and 1.72 g, 22 toolhead changes, 16 of 16 settings) and opened |
+| A two-colour project on screen | Owner's screenshot, 15 Nov: filaments 1 `* Generic PLA` and 2 `Flashforge PLA…`, each half in its colour on its toolhead, purge tower placed, Slice plate enabled |
+| Each toolhead keeps its own filament settings | Four-colour plate G-code: `nozzle_temperature = 215,210,210,230`, `filament_max_volumetric_speed = 6.7,18,18,12` |
 | Hand changes read back from a saved project | The owner's saved project against the one the server wrote: `enable_support` 0 to 1, model swapped, plus two purge tower values Flash Studio rewrote |
 
 Not yet proven:
 
 - The finished print. On 15 November the owner printed two of the downloaded PS5 holders. He imported the holder into the old project `DualSenseWallHolder_v1.3.3mf` (which kept its file name), added supports by hand in Flash Studio and cloned the part (60.3 g in the printer app). The printer app showed toolhead 1 at 215 C and the bed at 60 C, so the spool's label figures reached the machine. The result has not been assessed yet. The v1.3 hook designed in session 1 was never printed: two of them slice to 100.7 g, and Flash Studio generates no supports for it even with supports on. The server now turns supports on for the downloaded holder by itself (its designer saved them on, and it has 112 mm² of overhang), so the manual step is no longer needed.
-- A multi-colour project on screen. The single-colour project was checked on screen; the four-colour one was only sliced.
+- The MCP tools called by Claude itself. The server was driven over the MCP protocol by a test client, but Claude had not been restarted, so the model's own choice of tool arguments from one sentence is untested.
+- The corrected two-colour project on screen. The screenshot was of the project written before the `filament_self_index` fix.
 - The MCP tools called from Claude Desktop or Claude Code. The running MCP server loads the main checkout's code, so restart Claude after merging to pick up session 2.
 - Colour-painted models. The writer carries `paint_color` through and a unit test checks the file, but no real painted model has been sliced.
 - A multi-colour print on the machine. The four-colour plate was sliced, not printed.
@@ -78,6 +82,10 @@ Each of these cost a round trip through the owner. Do not relearn them.
 18. **Inner-outer-inner wall order makes Flash Studio warn** that the precise wall option is ignored, when the preset leaves that option unset (its built-in default is on). Set `precise_outer_wall` to 0 with that order.
 19. **The computer-use tools see only the first Flash Studio process.** A window opened with `open -n` belongs to a second process and cannot be captured that way. Its title is readable through System Events; its Prepare tab is custom-drawn and not exposed to accessibility. Ask the owner for a screenshot.
 20. **A test that segfaults on purpose raises a macOS crash report every run.** The fake slicer now dies by SIGKILL.
+21. **A multi-filament project needs `filament_self_index`.** Without `["1", "2", …]` the slicer reads toolhead 1's values for every toolhead: toolhead 2 printed at 215 C where its preset says 210. Flash Studio writes this key when it saves. Found only because the G-code check compares every toolhead's value.
+22. **A gap in a per-toolhead list makes the slicer drop every setting, silently.** PLA with PETG: one preset defines `textured_cool_plate_temp`, the other does not; the list held a null; the slicer logged `load_from_json … invalid json array`, exited 0 and sliced with its defaults. Fill gaps from a preset that has the key, and treat that log line as a failed slice.
+23. **The purge tower values are not ours to change.** The Creator 5 preset itself says `165%` and `rib`; the saved single-filament project had `100%` and `rectangle` with the tower off. Flash Studio's public source does not contain these keys (the app is newer than the repo), so the reason is unknown. Left as the preset has them.
+24. **A flow cap from the label's speed halves at half the layer height.** Use a proven `max_flow` per spool.
 5. **Speed is best limited through `filament_max_volumetric_speed`**, not individual speed settings. It covers every move.
 6. **Curly quotes.** Two commands failed because the chat app changed `"` to typographic quotes. The terminal command takes hyphenated words (`--filament ender-pla`) for this reason.
 
@@ -94,11 +102,12 @@ From this session and from the article the owner shared (How-To Geek, "This is w
 
 ## 5. What to do next, in order
 
-Done in session 2: the MCP path writes and opens the project without prompting (server instructions and `open -n`); the integration tests (`tests/test_real_slicer.py`); the filament colour from the request; the spool register; object names; multi-colour and multi-object 3MFs; a `best` quality level; the LAN upload and USB copy removed; supports checked in the G-code; a print result log with hand changes read from a saved project; CI; the smoke test writing to a throwaway folder.
+Done in session 2: the MCP path writes and opens the project without prompting (server instructions and `open -n`); the integration tests (`tests/test_real_slicer.py`); the filament colour from the request; the spool register; object names; multi-colour and multi-object 3MFs; a `best` quality level; the LAN upload and USB copy removed; supports checked in the G-code; a print result log with hand changes read from a saved project; CI; the smoke test writing to a throwaway folder; a proven flow limit per spool; a two-colour test piece; old test jobs moved to the Trash (`~/.Trash/Creator5Prints_tidy_20261115`).
 
-1. **Get the rest of the PS5 holder result**: support removal, strength and fit. Record it with `record_print_result`.
-2. **Look at a multi-colour project on screen**: `~/Creator5Prints/20261115_172949_Skeleton/Skeleton.3mf`. Confirm four filaments in the right colours, each part on its toolhead, and Slice plate enabled.
-3. **Calibrate per spool.** The flow cap comes from the label's top speed, which is conservative. One flow and temperature test per spool, stored in the register, would replace it.
+1. **Get the rest of the PS5 holder result**: support removal, strength and fit. Record it with `record_print_result`. If supports were hard to remove, tune the gap and interface settings, which are Flash Studio's defaults.
+2. **Print the two-colour test piece**: `~/Creator5Prints/20261115_195640_Two_colour_test/Two_colour_test.3mf` (black Ender PLA and the blue PLA in toolhead 2). Then the four-colour plate, `~/Creator5Prints/20261115_195659_Skeleton/Skeleton.3mf`.
+3. **Run a flow test on the black PLA** (Flash Studio's Calibration menu) and save the result as the spool's `max_flow`. It is 6.7 mm³/s now, from one good print. The blue, teal and magenta PLA in toolheads 2 to 4 have no label figures saved yet.
+3a. **After restarting Claude, try one sentence** and check the tool arguments it chooses.
 4. **STEP files.** Not supported (section 3, item 12). Ask the owner whether to add a converter library.
 5. **OrcaSlicer 2.5 `.opc` presets.** Only worth reading if the owner moves off Flash Studio.
 

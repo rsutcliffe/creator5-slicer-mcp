@@ -126,6 +126,12 @@ def slice_project(settings: Settings, project: Path, job_dir: Path, timeout: int
                   job_dir, "slicer.log", timeout)
     gcodes = sorted(job_dir.rglob("*.gcode"))
     tail = (result.stderr or result.stdout).strip()[-1500:]
+    # The slicer carries on with its own defaults when it cannot read the project's settings,
+    # and still exits cleanly. That G-code is not the job that was asked for.
+    rejected = next((line for line in (result.stdout + result.stderr).splitlines() if "load_from_json" in line and "error" in line), None)
+    if rejected:
+        raise SliceError(f"The slicer could not read the project's settings and would have used its defaults. "
+                         f"Please report this. Log: {job_dir / 'slicer.log'}\n{rejected.strip()[-300:]}")
     if not gcodes:
         raise SliceError(f"Slicer exited with code {result.returncode} and wrote no G-code. Log: {job_dir / 'slicer.log'}\n{tail}")
     complete = gcode_is_complete(gcodes[0])
