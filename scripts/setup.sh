@@ -21,7 +21,7 @@ if [ ! -x .venv/bin/python ]; then python3 -m venv .venv || exit 1; fi
 .venv/bin/python -m pip install --quiet -e . || exit 1
 echo "installed"
 
-step "Slicing a test cube with your slicer"
+step "Checking the slicer by slicing a small cube to a file (nothing is sent to the printer)"
 if .venv/bin/python scripts/smoke_test.py; then
     SMOKE=ok
 else
