@@ -56,6 +56,14 @@ Use this route if you want to edit the settings tables. None of these commands n
 ```bash
 git clone https://github.com/rsutcliffe/creator5-slicer-mcp
 cd creator5-slicer-mcp
+./scripts/setup.sh
+```
+
+`setup.sh` does everything in one go and is safe to run again to update: it pulls the latest code, installs it into `.venv`, slices a test cube with your real slicer, and only if that passes registers the server with Claude Desktop and Claude Code. The full output is saved to `setup_report.txt`.
+
+The individual steps, if you prefer to run them by hand:
+
+```bash
 python3 -m venv .venv
 .venv/bin/pip install -e .
 .venv/bin/python scripts/smoke_test.py
