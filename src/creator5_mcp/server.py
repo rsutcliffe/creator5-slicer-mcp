@@ -54,7 +54,12 @@ def check_setup() -> dict:
     if settings.slicer_path:
         report["slicer_version"] = slicer.version(settings)
     else:
-        report["fix"] = "Install OrcaSlicer or set ORCA_SLICER_PATH."
+        report["fix"] = "Install OrcaSlicer or Flash Studio, or set ORCA_SLICER_PATH."
+    if settings.slicer_path and not settings.profiles_dir:
+        try:
+            settings.require_profiles()
+        except ConfigError as exc:
+            report["fix"] = str(exc)
     if settings.profiles_dir:
         try:
             report["nozzles"] = {n: list(profiles.process_presets(settings.profiles_dir, n).values())

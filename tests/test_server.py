@@ -53,6 +53,31 @@ def test_check_setup_and_missing_slicer(fake_env, monkeypatch):
     assert not server.check_setup()["ok"]
 
 
+def test_slicer_with_readable_presets_beats_one_with_packed_presets(tmp_path, profiles_dir, monkeypatch):
+    """OrcaSlicer 2.5 packs presets into .opc files; a slicer with plain JSON presets must win."""
+    from creator5_mcp import config
+    orca, studio = tmp_path / "orca-bin", tmp_path / "studio-bin"
+    orca.write_text(""); studio.write_text("")
+    packed = tmp_path / "packed"
+    (packed / "Flashforge").mkdir(parents=True)          # cover images only, no machine/ folder
+    (packed / "Flashforge.opc").write_bytes(b"ZCRO")
+    for key in ("ORCA_SLICER_PATH", "ORCA_PROFILES_DIR"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(config, "_candidates", lambda: [(orca, [packed]), (studio, [profiles_dir])])
+    settings = config.load_settings()
+    assert (settings.slicer_path, settings.profiles_dir) == (studio, profiles_dir)
+    # Only the packed slicer installed: slicer is found, presets are not, and the fix is explained.
+    monkeypatch.setattr(config, "_candidates", lambda: [(orca, [packed])])
+    settings = config.load_settings()
+    assert settings.slicer_path == orca and settings.profiles_dir is None
+    report = server.check_setup()
+    assert not report["ok"] and ".opc" in report["fix"]
+    # An explicit presets folder is honoured with whichever slicer is found.
+    monkeypatch.setenv("ORCA_PROFILES_DIR", str(profiles_dir))
+    settings = config.load_settings()
+    assert (settings.slicer_path, settings.profiles_dir) == (orca, profiles_dir)
+
+
 def test_printer_tools_need_credentials(fake_env, cube_stl):
     assert "C5_PRINTER_IP" in server.printer_status()["error"]
     assert "not configured" in server.send_to_printer(str(cube_stl))["error"]
