@@ -31,7 +31,8 @@ def _credentials(settings: Settings) -> tuple[str, str, str]:
         ("C5_PRINTER_SERIAL", settings.printer_serial),
         ("C5_PRINTER_CHECK_CODE", settings.printer_check_code)) if not value]
     if missing:
-        raise PrinterError("Printer not configured. Set " + ", ".join(missing) + " in the MCP server's environment.")
+        raise PrinterError("Printer not configured (missing " + ", ".join(missing) + "). Save its details once with: "
+                           "python -m creator5_mcp.cli --save-printer IP SERIAL CHECKCODE")
     return settings.printer_ip, settings.printer_serial, settings.printer_check_code  # type: ignore[return-value]
 
 

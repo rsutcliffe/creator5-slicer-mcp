@@ -198,3 +198,44 @@ def test_cli_slices_without_needing_quotes(fake_env, cube_stl, capsys):
     assert "Creality Ender PLA" in out and "wall_loops             4" in out and "nozzle_temperature     215" in out
     assert "1h 23m" in out and "15.25 g" in out
     assert cli.main(["/nope.stl", "--filament", "PLA"]) == 1 and "FAILED" in capsys.readouterr().out
+
+
+def test_cli_copies_gcode_and_reports_missing_usb(fake_env, cube_stl, tmp_path, capsys, monkeypatch):
+    from creator5_mcp import cli
+    dest = tmp_path / "stick"; dest.mkdir()
+    assert cli.main([str(cube_stl), "--copies", "2", "--copy-to", str(dest)]) == 0
+    assert (dest / "cube_x2.gcode").read_text().endswith("; EXECUTABLE_BLOCK_END\n")
+    monkeypatch.setattr(cli, "_usb_volumes", lambda: [])
+    assert cli.main([str(cube_stl), "--usb"]) == 1 and "No USB stick found" in capsys.readouterr().out
+    monkeypatch.setattr(cli, "_usb_volumes", lambda: [dest])
+    assert cli.main([str(cube_stl), "--usb"]) == 0 and (dest / "cube.gcode").is_file()
+
+
+def test_cli_saves_printer_and_sends(fake_env, cube_stl, capsys, monkeypatch):
+    """Printer details are saved once to a file, then used for uploads."""
+    import http.server, threading
+    from creator5_mcp import cli
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            seen.append((self.path, self.headers.get("printNow"), self.headers.get("checkCode")))
+            payload = b'{"code":0,"detail":{"status":"ready"}}'
+            self.send_response(200); self.send_header("Content-Length", str(len(payload))); self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    monkeypatch.setattr(printer, "PORT", httpd.server_address[1])
+    try:
+        assert cli.main([str(cube_stl), "--send"]) == 1 and "not configured" in capsys.readouterr().out.lower()
+        assert cli.main(["--save-printer", "127.0.0.1", "SN9", "code9"]) == 0
+        assert cli.main([str(cube_stl), "--send"]) == 0
+        assert cli.main([str(cube_stl), "--print"]) == 0
+    finally:
+        httpd.shutdown()
+    assert seen == [("/detail", None, None), ("/uploadGcode", "false", "code9"), ("/uploadGcode", "true", "code9")]

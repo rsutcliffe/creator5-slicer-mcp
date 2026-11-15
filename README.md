@@ -125,13 +125,22 @@ Supports    off (no significant overhangs found)
 Output      ~/Creator5Prints/20261115_141500_controller_holder/plate_1.gcode
 ```
 
+## From the terminal
+
+The same engine without an MCP client. No quotation marks are needed.
+
+```bash
+.venv/bin/python -m creator5_mcp.cli MODEL.stl --filament ender-pla --strength functional --copies 2 --usb
+```
+
+`--open` shows the layer preview, `--usb` copies the G-code to the USB stick that is plugged in, `--send` uploads it to the printer and `--print` uploads and starts. Save the printer's network details once with `--save-printer IP SERIAL CHECKCODE`.
+
 ## Printing the result
 
-Three routes, safest first:
+The slicer's G-code preview is view-only: Flash Studio will not print from it. Use one of these:
 
-1. `open_in_slicer` opens the G-code in OrcaSlicer or Flash Studio. Look over the layer preview and print from there.
-2. Copy the `.gcode` to a USB stick.
-3. `send_to_printer` uploads over your network using the printer's LAN mode. It only uploads by default. Pass `start_print=true` once the bed is clear and the filament is loaded.
+1. USB stick: copy the `.gcode` across (`--usb` does this) and start it from the printer's screen. Always works.
+2. Network: `send_to_printer`, or `--send` / `--print`, uploads using the printer's LAN mode. Experimental. It only uploads unless told to start.
 
 ## Limits in this version
 

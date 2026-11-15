@@ -116,6 +116,7 @@ def fake_env(tmp_path: Path, profiles_dir: Path, monkeypatch) -> Path:
     monkeypatch.setenv("ORCA_SLICER_PATH", str(slicer))
     monkeypatch.setenv("ORCA_PROFILES_DIR", str(profiles_dir))
     monkeypatch.setenv("C5_OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("C5_PRINTER_FILE", str(tmp_path / "printer.json"))
     for key in ("C5_PRINTER_IP", "C5_PRINTER_SERIAL", "C5_PRINTER_CHECK_CODE"):
         monkeypatch.delenv(key, raising=False)
     return tmp_path
