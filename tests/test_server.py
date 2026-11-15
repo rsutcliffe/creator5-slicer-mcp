@@ -16,6 +16,16 @@ def test_slice_model_end_to_end_with_fake_slicer(fake_env, cube_stl):
     job = Path(result["job_dir"])
     assert job.name.endswith("_My_Part") and Path(result["gcode"]).is_file()
     assert result["gcode_complete"] and result["exit_code"] == 0 and result["notes"] == []
+    # A project file carries the model, both copies and the changed settings.
+    import zipfile
+    with zipfile.ZipFile(result["project_3mf"]) as archive:
+        settings = json.loads(archive.read("Metadata/project_settings.config"))
+        model_xml = archive.read("3D/3dmodel.model").decode()
+    assert settings["print_settings_id"] == "0.20mm Standard @FF C5" and settings["wall_loops"] == "4"
+    assert settings["filament_settings_id"] == ["Flashforge PLA Basic @FF C5"] and settings["filament_colour"] == ["#161616"]
+    assert "wall_loops" in settings["different_settings_to_system"][0].split(";")
+    assert settings["inherits_group"] == ["", "", ""] and "inherits" not in settings
+    assert model_xml.count("<item objectid") == 2 and "BambuStudio-01.10.01.50" in model_xml
     # The slicer received flattened presets carrying the recommended values.
     process = json.loads(Path(result["presets_written"]["process"]).read_text())
     assert process["wall_loops"] == "4" and process["sparse_infill_density"] == "25%" and "inherits" not in process

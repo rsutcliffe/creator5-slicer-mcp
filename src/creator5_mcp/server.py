@@ -11,7 +11,7 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import __version__, model, printer, profiles, recommend, slicer
+from . import __version__, model, printer, profiles, project, recommend, slicer
 from .config import ConfigError, load_settings
 
 mcp = FastMCP(
@@ -20,7 +20,8 @@ mcp = FastMCP(
         "Slices 3D models for a Flashforge Creator 5 using OrcaSlicer. Typical flow: call "
         "slice_model with the model path, the filament the user named, and a quality and strength "
         "level that suit the part's purpose. It analyses the shape, picks presets and settings, "
-        "slices, and returns the G-code path with time and filament estimates. Relay the returned "
+        "slices, and returns a project file plus time and filament estimates. Then call open_in_slicer "
+        "with the project_3mf path so the user can print from the slicer. Relay the returned "
         "warnings to the user. If the user gives figures from the spool's label, pass them as "
         "nozzle_temp, bed_temp and max_speed. Use recommend_settings first when the user wants to review choices. "
         "Only call send_to_printer with start_print=true after the user confirms the printer is "
@@ -29,7 +30,7 @@ mcp = FastMCP(
 )
 
 _ERRORS = (ConfigError, profiles.ProfileError, model.ModelError, recommend.RecommendError,
-           slicer.SliceError, printer.PrinterError)
+           slicer.SliceError, printer.PrinterError, project.ProjectError)
 
 
 def _fail(exc: Exception) -> dict:
@@ -182,7 +183,7 @@ def slice_model(
 ) -> dict:
     """Slice a model for the Creator 5 with settings chosen for the filament and purpose.
 
-    Returns the G-code path, print time, filament use,
+    Returns a project file (project_3mf) to open in the slicer and print from, the G-code path, print time, filament use,
     the settings applied with reasons, and any warnings to pass on to the user.
 
     Args:
@@ -212,6 +213,16 @@ def slice_model(
                                layer_height, precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed)
         result = slicer.slice_model(settings, _path(model_path), plan, process_overrides, filament_overrides,
                                     job_name, auto_orient, copies)
+        # A project the slicer opens for editing and printing, alongside the G-code used for the estimates.
+        try:
+            name = Path(result["job_dir"]).name.split("_", 2)[-1]
+            made = project.write_project(settings.require_profiles(), _path(model_path), plan,
+                                         Path(result["job_dir"]) / f"{name}.3mf", copies,
+                                         process_overrides, filament_overrides)
+            result["project_3mf"] = made["project"]
+        except project.ProjectError as exc:
+            result["project_3mf"] = None
+            plan["warnings"].append(f"No project file was written: {exc}")
         if result["settings_not_in_base_preset"]:
             plan["warnings"].append(
                 "These override keys are not in the base preset and may be misspelt: "
@@ -223,10 +234,14 @@ def slice_model(
 
 @mcp.tool()
 def open_in_slicer(path: str) -> dict:
-    """Open a sliced project or model in the slicer's window so the user can inspect it and print from there.
+    """Open a project in the slicer's window, ready to slice and print.
+
+    Pass the project_3mf path returned by slice_model. The slicer shows the model with all the
+    chosen settings applied, and its own Slice and Print buttons work as usual. A .gcode file
+    opens as a view-only preview that cannot be printed.
 
     Args:
-        path: Absolute path to a .3mf, .gcode or model file.
+        path: Absolute path to the .3mf project (preferred), or a .gcode or model file.
     """
     try:
         settings = load_settings()

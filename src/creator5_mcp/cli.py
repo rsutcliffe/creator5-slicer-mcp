@@ -98,12 +98,20 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Print time {summary.get('print_time', '?')}   Filament {summary.get('filament_used_g', '?')} g")
     for warning in plan["warnings"] + result["notes"]:
         print("  NOTE: " + warning)
+    if result.get("project_3mf"):
+        print("  Project    " + result["project_3mf"])
     print("  G-code     " + result["gcode"])
     name = Path(args.model).stem + (f"_x{args.copies}" if args.copies > 1 else "")
     failed = False
     if args.open:
-        opened = server.open_in_slicer(result["gcode"])
-        print("  Shown in the slicer's preview (view only)." if opened["ok"] else "  Could not open the slicer: " + opened["error"])
+        target = result.get("project_3mf") or result["gcode"]
+        opened = server.open_in_slicer(target)
+        if not opened["ok"]:
+            print("  Could not open the slicer: " + opened["error"])
+        elif result.get("project_3mf"):
+            print("  Opened as a project in the slicer: press Slice, then Print.")
+        else:
+            print("  Shown in the slicer's preview (view only).")
     if args.copy_to:
         print(f"  Copied to  {_copy(result['gcode'], Path(args.copy_to).expanduser(), name)}")
     if args.usb:
