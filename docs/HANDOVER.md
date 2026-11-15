@@ -31,7 +31,7 @@ Proven on the owner's Mac:
 | Part named by its designer, not the file hash | PS5 holder: G-code object `drzak_na_ps5_ovladac_v3`, was `93b857fe…` |
 | `best` quality | PS5 holder on `0.10mm Standard @FF C5`: 2h 51m, 31 g, 18 of 18 settings matched, 415 support sections |
 | Spool register | `black pla` saved in `~/Creator5Prints/spools.json`; the request `black-pla` resolved to Creality Ender PLA at 215/60 C |
-| Project opens on screen, ready to print | Owner's screenshot, 15 Nov: `open_in_slicer` opened the PS5 holder in a new window with no import dialog; Prepare tab; Flashforge Creator 5; `* Generic PLA`; `0.10mm Standard @FF C5` with its changed tabs marked; model on the plate; Slice plate enabled |
+| Project opens on screen, ready to print | Owner's screenshot, 15 Nov: `open_in_slicer` opened the PS5 holder in a new window with no import dialog; Prepare tab; Flashforge Creator 5; `* Generic PLA`; `0.10mm Standard @FF C5` with its changed tabs marked; model on the plate; Slice plate enabled. A first attempt showed a warning that the precise wall option is ignored; after the fix a second screenshot shows no warning |
 | A real print, good quality | Two downloaded PS5 holders, black Ender PLA, 0.20 mm, functional strength; logged in `~/Creator5Prints/print_results.json` and `docs/SETTINGS.md` |
 | Hand changes read back from a saved project | The owner's saved project against the one the server wrote: `enable_support` 0 to 1, model swapped, plus two purge tower values Flash Studio rewrote |
 
@@ -39,7 +39,6 @@ Not yet proven:
 
 - The finished print. On 15 November the owner printed two of the downloaded PS5 holders. He imported the holder into the old project `DualSenseWallHolder_v1.3.3mf` (which kept its file name), added supports by hand in Flash Studio and cloned the part (60.3 g in the printer app). The printer app showed toolhead 1 at 215 C and the bed at 60 C, so the spool's label figures reached the machine. The result has not been assessed yet. The v1.3 hook designed in session 1 was never printed: two of them slice to 100.7 g, and Flash Studio generates no supports for it even with supports on. The server now turns supports on for the downloaded holder by itself (its designer saved them on, and it has 112 mm² of overhang), so the manual step is no longer needed.
 - A multi-colour project on screen. The single-colour project was checked on screen; the four-colour one was only sliced.
-- The corrected best-quality project on screen. The first one showed a Flash Studio warning that the precise wall option is ignored; the fix is confirmed in the G-code (`precise_outer_wall = 0`) but the reopened window has not been looked at.
 - The MCP tools called from Claude Desktop or Claude Code. The running MCP server loads the main checkout's code, so restart Claude after merging to pick up session 2.
 - Colour-painted models. The writer carries `paint_color` through and a unit test checks the file, but no real painted model has been sliced.
 - A multi-colour print on the machine. The four-colour plate was sliced, not printed.
