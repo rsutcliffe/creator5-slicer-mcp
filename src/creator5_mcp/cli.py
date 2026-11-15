@@ -40,7 +40,7 @@ def _copy(gcode: str, folder: Path, name: str) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="creator5_mcp.cli", description="Slice a model for the Flashforge Creator 5.")
-    parser.add_argument("model", nargs="?", help="path to an STL, 3MF, STEP or OBJ file")
+    parser.add_argument("model", nargs="?", help="path to an STL, 3MF or OBJ file")
     parser.add_argument("--filament", nargs="+", default=["PLA"], help="e.g. PLA, PETG, ender-pla, silk-pla, TPU")
     parser.add_argument("--quality", default="standard", choices=["draft", "standard", "fine"])
     parser.add_argument("--strength", default="standard", choices=["decorative", "standard", "functional", "structural"])

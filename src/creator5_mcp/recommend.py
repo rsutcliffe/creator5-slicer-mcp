@@ -131,6 +131,7 @@ QUALITY: dict[str, tuple[float, str]] = {
 }
 
 AUTO, ON, OFF = "auto", "on", "off"
+OVERHANG_MM2 = 25.0   # unsupported underside, in mm², above which supports go on (about 5 x 5 mm)
 
 
 def match_material(filament: str) -> Material:
@@ -165,11 +166,14 @@ def recommend(
     nozzle_temp: int | None = None,
     bed_temp: int | None = None,
     max_speed: int | None = None,
+    designer: dict | None = None,
 ) -> dict:
     """Build a full settings plan. Pure function: nothing is written or sliced.
 
     nozzle_temp, bed_temp and max_speed carry the figures printed on a spool's
     label; they take priority over the preset and over the material's defaults.
+    designer holds the shape-dependent settings saved in the model's 3MF
+    (model.designer_settings); with supports or brim on auto they are followed.
     """
     if quality not in QUALITY:
         raise RecommendError(f"quality must be one of {', '.join(QUALITY)}")
@@ -255,30 +259,48 @@ def recommend(
 
     # Shape-aware choices -----------------------------------------------------
     shape = analysis if analysis and analysis.get("analysed") else None
+    if shape:
+        warnings.extend(shape.get("notes", []))
     if shape and not shape["fits_bed"]:
         if shape["fits_bed_if_rotated"]:
             warnings.append(f"Model is {shape['size_mm']} mm and only fits the 256 mm bed if rotated.")
         else:
             warnings.append(f"Model is {shape['size_mm']} mm, larger than the 256 x 256 x 256 mm build volume. Scale or split it.")
 
-    want_support = supports == ON
-    if supports == AUTO and shape:
-        want_support = shape["overhang_fraction"] > 0.01
+    designer = designer or {}
+
+    def keep_designer(keys: tuple[str, ...]) -> None:
+        # Only values that differ from the Creator 5 preset, so Flash Studio marks just those as changed.
+        for key in keys:
+            if key in designer and str(base.get(key)) != designer[key]:
+                overrides[key] = designer[key]
+
+    support_keys = ("support_type", "support_style", "support_threshold_angle", "support_on_build_plate_only")
+    if supports == AUTO and "enable_support" in designer:
+        want_support = designer["enable_support"] == "1"
+        rationale.append(f"Supports {'on' if want_support else 'off'}, as the model's designer saved it.")
         if want_support:
-            rationale.append(f"Supports on: {shape['overhang_fraction']:.1%} of the surface overhangs past 45 degrees.")
+            keep_designer(support_keys)
+    elif supports == AUTO and shape:
+        want_support = shape["overhang_area_mm2"] > OVERHANG_MM2
+        if want_support:
+            rationale.append(f"Supports on: {shape['overhang_area_mm2']:g} mm² of the underside is flatter than "
+                             f"{shape['support_angle']:g} degrees. Tree supports are placed only where needed.")
         else:
             rationale.append("Supports off: no significant overhangs found.")
-    elif supports == AUTO:
-        rationale.append("Supports left off: the model was not analysed. Pass supports='on' if it has overhangs.")
+    else:
+        want_support = supports == ON
+        if supports == AUTO:
+            rationale.append("Supports left off: the model's shape could not be read. Pass supports='on' if it has overhangs.")
     if want_support:
         overrides["enable_support"] = "1"
-        overrides["support_type"] = "tree(auto)"
+        if base.get("support_type") != "tree(auto)":
+            overrides.setdefault("support_type", "tree(auto)")
         if material.flexible:
             warnings.append("Supports are hard to remove from flexible filament; reorient the part if possible.")
     else:
         overrides["enable_support"] = "0"
 
-    want_brim = brim == ON
     if brim == AUTO:
         reasons = []
         if material.warps:
@@ -287,14 +309,23 @@ def recommend(
             reasons.append("the part is tall for its base")
         if shape and 0 < shape["bed_contact_area_mm2"] < 150:
             reasons.append("very little of the part touches the bed")
-        want_brim = bool(reasons)
         if reasons:
             rationale.append("Brim added because " + " and ".join(reasons) + ".")
-    if want_brim:
+            overrides["brim_type"] = "outer_only"
+            overrides["brim_width"] = "8" if material.warps else "5"
+        elif "brim_type" in designer:
+            keep_designer(("brim_type", "brim_width", "brim_object_gap"))
+            rationale.append(f"Brim '{designer['brim_type']}', as the model's designer saved it.")
+        else:
+            rationale.append(f"Brim left to the slicer ('{base.get('brim_type')}'), which adds one only where the part needs it.")
+    elif brim == ON:
         overrides["brim_type"] = "outer_only"
         overrides["brim_width"] = "8" if material.warps else "5"
     else:
         overrides["brim_type"] = "no_brim"
+    if designer.get("raft_layers", "0") != "0":
+        keep_designer(("raft_layers",))
+        rationale.append(f"Raft of {designer['raft_layers']} layers, as the model's designer saved it.")
 
     # Spool label figures ------------------------------------------------------
     filament_overrides: dict[str, str] = {}

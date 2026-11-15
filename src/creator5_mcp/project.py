@@ -49,14 +49,43 @@ class ProjectError(RuntimeError):
     pass
 
 
+FILAMENT_DIAMETER = 1.75  # mm, the only size the Creator 5 takes
+
+COLOURS = {"black": "#161616", "white": "#F2F2F2", "grey": "#8C8C8C", "gray": "#8C8C8C", "silver": "#C0C0C0",
+           "red": "#C8102E", "orange": "#F26722", "yellow": "#FFD100", "green": "#2E8B57", "blue": "#1F5AA6",
+           "purple": "#6A3D9A", "pink": "#F4A6C6", "brown": "#7B4A2A", "gold": "#D4AF37", "beige": "#E8D8B0",
+           "natural": "#EDE6D6", "clear": "#E6F2F7", "transparent": "#E6F2F7"}
+
+
+def colour_for(filament: str, default: str = "#161616") -> str:
+    """Display colour for the filament, from a colour word in how the user named it."""
+    words = filament.lower().replace("-", " ").split()
+    return next((COLOURS[w] for w in words if w in COLOURS), default)
+
+
 def project_settings(profiles_dir: Path, plan: dict, extra_process: dict | None = None,
-                     extra_filament: dict | None = None, colour: str = "#161616") -> dict:
-    """Merge the three presets and the overrides into one project settings document."""
+                     extra_filament: dict | None = None, colour: str = "#161616") -> tuple[dict, list[str]]:
+    """Merge the three presets and the overrides into one project settings document.
+
+    Returns the document and the caller's override keys the presets do not define
+    (passed through, but worth flagging: a misspelt key is silently ignored by the slicer).
+    """
     machine = profiles.flatten(profiles_dir, "machine", plan["machine_preset"])
     process_over = {**plan["process_overrides"], **(extra_process or {})}
     filament_over = {**plan["filament_overrides"], **(extra_filament or {})}
-    process, _ = profiles.apply_overrides(profiles.flatten(profiles_dir, "process", plan["process_preset"]), process_over)
-    filament, _ = profiles.apply_overrides(profiles.flatten(profiles_dir, "filament", plan["filament_preset"]), filament_over)
+    process = profiles.flatten(profiles_dir, "process", plan["process_preset"])
+    filament = profiles.flatten(profiles_dir, "filament", plan["filament_preset"])
+    unknown = [k for k in (extra_process or {}) if k not in process] + [k for k in (extra_filament or {}) if k not in filament]
+    process, _ = profiles.apply_overrides(process, process_over)
+    filament, _ = profiles.apply_overrides(filament, filament_over)
+
+    # A different diameter means a preset was resolved wrongly, and printing it would badly
+    # under- or over-extrude.
+    diameters = filament.get("filament_diameter")
+    diameters = diameters if isinstance(diameters, list) else [diameters]
+    if any(d is None or abs(float(d) - FILAMENT_DIAMETER) > 0.01 for d in diameters):
+        raise ProjectError(f"Refusing to build the project: the filament preset resolves to a diameter of {diameters} mm, "
+                           f"but the Creator 5 uses {FILAMENT_DIAMETER} mm. Please report this.")
 
     merged: dict = {}
     for preset in (machine, process, filament):
@@ -73,13 +102,14 @@ def project_settings(profiles_dir: Path, plan: dict, extra_process: dict | None 
         "inherits_group": ["", "", ""],
         "different_settings_to_system": [";".join(sorted(process_over)), ";".join(sorted(filament_over)), ""],
     })
-    return merged
+    return merged, unknown
 
 
 def _mesh(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if path.suffix.lower() != ".stl":
-        raise ProjectError("Projects can be built from STL files only. Convert the model to STL first.")
-    tris = model_mod._load_stl(path)
+    try:
+        tris, _ = model_mod.load_mesh(path)   # STL, OBJ or 3MF, oriented as the file has it
+    except model_mod.ModelError as exc:
+        raise ProjectError(str(exc)) from exc
     lo, hi = tris.reshape(-1, 3).min(axis=0), tris.reshape(-1, 3).max(axis=0)
     # Centre on the XY origin with the base at z = 0, so placement is a plain translation.
     tris = tris - np.array([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]])
@@ -131,7 +161,7 @@ def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Pa
         raise ProjectError("copies must be at least 1")
     vertices, faces, size = _mesh(model_path)
     positions = _positions(size, copies)
-    settings = project_settings(profiles_dir, plan, extra_process, extra_filament, colour)
+    settings, unknown = project_settings(profiles_dir, plan, extra_process, extra_filament, colour)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", _CONTENT_TYPES)
@@ -144,4 +174,6 @@ def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Pa
         "part_size_mm": [round(float(s), 1) for s in size],
         "changed_process_settings": settings["different_settings_to_system"][0].split(";"),
         "changed_filament_settings": [k for k in settings["different_settings_to_system"][1].split(";") if k],
+        "unknown_override_keys": unknown,
+        "settings": settings,
     }

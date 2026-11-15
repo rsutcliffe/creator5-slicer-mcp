@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import platform
+import re
 import subprocess
+import time
 from pathlib import Path
 
 try:  # mcp 2.x
@@ -20,8 +22,9 @@ mcp = FastMCP(
         "Slices 3D models for a Flashforge Creator 5 using OrcaSlicer. Typical flow: call "
         "slice_model with the model path, the filament the user named, and a quality and strength "
         "level that suit the part's purpose. It analyses the shape, picks presets and settings, "
-        "slices, and returns a project file plus time and filament estimates. Then call open_in_slicer "
-        "with the project_3mf path so the user can print from the slicer. Relay the returned "
+        "writes a project file, slices that project to check it, and returns time and filament estimates. "
+        "Then, without asking, call open_in_slicer with the project_3mf path so the user can press Slice "
+        "and Print in Flash Studio. Pass auto_orient only when the user asks for it. Relay the returned "
         "warnings to the user. If the user gives figures from the spool's label, pass them as "
         "nozzle_temp, bed_temp and max_speed. Use recommend_settings first when the user wants to review choices. "
         "Only call send_to_printer with start_print=true after the user confirms the printer is "
@@ -107,12 +110,20 @@ def analyse_model(model_path: str) -> dict:
 
 def _plan(model_path: str | None, filament: str, quality: str, strength: str, nozzle: str, supports: str,
           brim: str, layer_height: float | None, precise_fit: bool, smooth_top: bool, pro: bool,
-          nozzle_temp: int = 0, bed_temp: int = 0, max_speed: int = 0) -> tuple[dict, dict | None]:
+          nozzle_temp: int = 0, bed_temp: int = 0, max_speed: int = 0,
+          shape_path: Path | None = None) -> tuple[dict, dict | None]:
+    """shape_path: the file whose shape will print, when it differs from model_path (an oriented copy)."""
     settings = load_settings()
-    analysis = model.analyse(_path(model_path)) if model_path else None
+    analysis = designer = None
+    if model_path:
+        path = _path(model_path)
+        designer = model.designer_settings(path)
+        angle = float(designer.get("support_threshold_angle") or 0) or model.DEFAULT_SUPPORT_ANGLE
+        analysis = model.analyse(shape_path or path, angle)
     plan = recommend.recommend(
         settings.require_profiles(), filament, quality, strength, nozzle, analysis, supports, brim,
-        layer_height or None, precise_fit, smooth_top, pro, nozzle_temp or None, bed_temp or None, max_speed or None)
+        layer_height or None, precise_fit, smooth_top, pro, nozzle_temp or None, bed_temp or None, max_speed or None,
+        designer)
     return plan, analysis
 
 
@@ -137,7 +148,8 @@ def recommend_settings(
 
     Args:
         filament: Filament as the user describes it, e.g. "black PLA", "PETG", "TPU 95A", "silk PLA".
-        model_path: Optional absolute path to the STL, so supports and brim respond to its shape.
+        model_path: Optional absolute path to the STL, OBJ or 3MF, so supports and brim respond to its shape
+            and to any settings its designer saved in the 3MF.
         quality: draft, standard or fine. Sets layer height and outer wall care.
         strength: decorative, standard, functional or structural. Sets walls, infill and shells.
         nozzle: Nozzle diameter in mm: 0.25, 0.4, 0.6 or 0.8.
@@ -183,11 +195,13 @@ def slice_model(
 ) -> dict:
     """Slice a model for the Creator 5 with settings chosen for the filament and purpose.
 
-    Returns a project file (project_3mf) to open in the slicer and print from, the G-code path, print time, filament use,
-    the settings applied with reasons, and any warnings to pass on to the user.
+    Writes a project file (project_3mf) to open in the slicer and print from, then slices that same
+    project to check it: print time, filament use, and that every chosen setting reached the G-code.
+    Returns those, the settings applied with reasons, and any warnings to pass on to the user.
+    A 3MF that carries its designer's slicer settings keeps the designer's supports and brim.
 
     Args:
-        model_path: Absolute path to an STL, 3MF, STEP or OBJ file on this computer.
+        model_path: Absolute path to an STL, 3MF or OBJ file on this computer.
         filament: Filament as the user describes it, e.g. "black PLA", "PETG", "TPU 95A".
         quality: draft, standard or fine.
         strength: decorative, standard, functional or structural.
@@ -198,7 +212,8 @@ def slice_model(
         precise_fit: True for parts that must mate with other parts.
         smooth_top: True to iron flat top surfaces.
         copies: Number of copies to arrange on the plate.
-        auto_orient: Let the slicer rotate the part. Leave False when the model is already oriented for strength.
+        auto_orient: Let the slicer turn the part to its best orientation, in the project and the G-code alike.
+            Leave False when the model is already oriented for strength, as designers' files usually are.
         process_overrides: Extra OrcaSlicer process settings applied last, e.g. {"wall_loops": 5}.
         filament_overrides: Extra OrcaSlicer filament settings, e.g. {"nozzle_temperature": 215}.
         job_name: Name for the output folder and files.
@@ -209,25 +224,40 @@ def slice_model(
     """
     try:
         settings = load_settings()
-        plan, analysis = _plan(model_path, filament, quality, strength, nozzle, supports, brim,
-                               layer_height, precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed)
-        result = slicer.slice_model(settings, _path(model_path), plan, process_overrides, filament_overrides,
-                                    job_name, auto_orient, copies)
-        # A project the slicer opens for editing and printing, alongside the G-code used for the estimates.
-        try:
-            name = Path(result["job_dir"]).name.split("_", 2)[-1]
-            made = project.write_project(settings.require_profiles(), _path(model_path), plan,
-                                         Path(result["job_dir"]) / f"{name}.3mf", copies,
-                                         process_overrides, filament_overrides)
-            result["project_3mf"] = made["project"]
-        except project.ProjectError as exc:
-            result["project_3mf"] = None
-            plan["warnings"].append(f"No project file was written: {exc}")
-        if result["settings_not_in_base_preset"]:
+        profiles_dir = settings.require_profiles()
+        source = _path(model_path)
+        if not source.is_file():
+            raise model.ModelError(f"Model not found: {source}")
+        if copies < 1:
+            raise project.ProjectError("copies must be at least 1")
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        name = re.sub(r"[^A-Za-z0-9._-]+", "_", job_name or source.stem).strip("_") or "print"
+        job_dir = settings.output_dir / f"{stamp}_{name}"
+        job_dir.mkdir(parents=True, exist_ok=True)
+        notes: list[str] = []
+        # Designer settings come from the original file; the shape from the file that will print.
+        shaped = slicer.orient(settings, source, job_dir) if auto_orient else source
+        if auto_orient:
+            notes.append("The slicer chose the orientation; the project and the G-code both use it.")
+        plan, analysis = _plan(str(source), filament, quality, strength, nozzle, supports, brim, layer_height,
+                               precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed, shape_path=shaped)
+        made = project.write_project(profiles_dir, shaped, plan, job_dir / f"{name}.3mf", copies,
+                                     process_overrides, filament_overrides, project.colour_for(filament))
+        result = slicer.slice_project(settings, Path(made["project"]), job_dir)
+        result["notes"] = notes + result["notes"]
+        expected = {k: made["settings"][k] for k in
+                    {**plan["process_overrides"], **(process_overrides or {}),
+                     **plan["filament_overrides"], **(filament_overrides or {})}}
+        mismatched = slicer.check_settings(Path(result["gcode"]), expected)
+        if mismatched:
+            plan["warnings"].append("Some settings did not reach the G-code: " + "; ".join(mismatched))
+        if made["unknown_override_keys"]:
             plan["warnings"].append(
                 "These override keys are not in the base preset and may be misspelt: "
-                + ", ".join(result["settings_not_in_base_preset"]))
-        return {"ok": True, **result, "plan": plan, "model": analysis}
+                + ", ".join(made["unknown_override_keys"]))
+        return {"ok": True, "project_3mf": made["project"], **result,
+                "settings_checked_in_gcode": len(expected) - len(mismatched), "settings_mismatched": mismatched,
+                "plan": plan, "model": analysis}
     except _ERRORS as exc:
         return _fail(exc)
 
@@ -251,7 +281,10 @@ def open_in_slicer(path: str) -> dict:
             return _fail(FileNotFoundError(f"File not found: {target}"))
         if platform.system() == "Darwin" and ".app/" in str(binary):
             app = str(binary).split(".app/")[0] + ".app"
-            subprocess.Popen(["open", "-a", app, str(target)])
+            # -n: a new window with an empty plate. It never replaces a project already open, and
+            # with an empty plate Flash Studio opens a .3mf as a project without asking
+            # (Plater::open_3mf_file asks only when the plate has objects).
+            subprocess.Popen(["open", "-n", "-a", app, str(target)])
         else:
             subprocess.Popen([str(binary), str(target)])
         return {"ok": True, "opened": str(target)}

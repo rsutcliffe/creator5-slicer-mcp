@@ -91,10 +91,10 @@ python3 -m venv .venv
 |---|---|
 | `check_setup` | Confirms the slicer, the Creator 5 presets and the printer details are in place |
 | `list_filaments` | Lists the filament types understood and the presets installed |
-| `analyse_model` | Measures an STL: size, volume, bed contact, overhangs, fit on the 256 mm bed |
+| `analyse_model` | Measures an STL, OBJ or 3MF: size, volume, bed contact, overhangs, fit on the 256 mm bed |
 | `recommend_settings` | Returns the chosen presets and settings with reasons, without slicing |
-| `slice_model` | Analyses, chooses settings, slices, and returns G-code with time and filament estimates |
-| `open_in_slicer` | Opens the result in the slicer window to inspect and print from there |
+| `slice_model` | Analyses, chooses settings, writes the project, slices it, and confirms each setting reached the G-code |
+| `open_in_slicer` | Opens the project in a new Flash Studio window, ready for Slice and Print |
 | `printer_status` | Reads the printer's state over the local network (experimental) |
 | `send_to_printer` | Uploads a sliced file; starts the print only when asked (experimental) |
 
@@ -137,7 +137,7 @@ The same engine without an MCP client. No quotation marks are needed.
 
 ## Printing the result
 
-`slice_model` writes a project file (`project_3mf`) and `open_in_slicer` opens it in Flash Studio with the model and every setting loaded. Press Slice, then Print. This is the normal route.
+`slice_model` writes a project file (`project_3mf`) and `open_in_slicer` opens it in a new Flash Studio window with the model and every setting loaded. A new window leaves any project you already have open alone, and with an empty plate Flash Studio opens the file as a project without asking. Press Slice, then Print. This is the normal route.
 
 The slicer's G-code preview is view-only, so do not open the `.gcode`. Two other routes exist but are not needed:
 
@@ -147,7 +147,8 @@ The slicer's G-code preview is view-only, so do not open the `.gcode`. Two other
 ## Limits in this version
 
 - Single-material jobs on toolhead 1. Multi-colour and multi-material plates are not yet handled.
-- Shape analysis reads STL only. 3MF, STEP and OBJ still slice, with supports off unless you ask for them.
+- Models must be STL, OBJ or 3MF. Export STEP files as one of those.
+- A 3MF with several objects is joined into one part; with several plates, only plate 1 is used.
 - The recommended values are reasoned starting points, not measured optima. See [docs/SETTINGS.md](docs/SETTINGS.md).
 - The LAN upload follows OrcaSlicer's Flashforge print host and has not been confirmed on hardware.
 

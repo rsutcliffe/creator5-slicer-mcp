@@ -26,32 +26,61 @@ def test_slice_model_end_to_end_with_fake_slicer(fake_env, cube_stl):
     assert "wall_loops" in settings["different_settings_to_system"][0].split(";")
     assert settings["inherits_group"] == ["", "", ""] and "inherits" not in settings
     assert model_xml.count("<item objectid") == 2 and "BambuStudio-01.10.01.50" in model_xml
-    # The slicer received flattened presets carrying the recommended values.
-    process = json.loads(Path(result["presets_written"]["process"]).read_text())
-    assert process["wall_loops"] == "4" and process["sparse_infill_density"] == "25%" and "inherits" not in process
-    filament = json.loads(Path(result["presets_written"]["filament"]).read_text())
-    assert filament["filament_density"] == ["1.24"]
+    assert settings["sparse_infill_density"] == "25%" and settings["filament_density"] == ["1.24"]
+    assert settings["filament_diameter"] == ["1.75"]
+    # The slicer sliced that same project, taking its settings from it, and every chosen setting reached the G-code.
     argv = json.loads((job / "argv.json").read_text())
-    assert argv.count(str(cube_stl)) == 2 and argv[argv.index("--orient") + 1] == "0"
-    assert "--export-3mf" not in argv
-    assert filament["filament_diameter"] == ["1.75"]
+    assert argv[-1] == result["project_3mf"] and "--load-settings" not in argv and "--export-3mf" not in argv
+    assert argv[argv.index("--orient") + 1] == "0" and argv[argv.index("--arrange") + 1] == "0"
+    assert result["settings_mismatched"] == [] and result["settings_checked_in_gcode"] >= 8
 
 
 def test_overrides_apply_last_and_unknown_keys_are_flagged(fake_env, cube_stl):
     result = server.slice_model(str(cube_stl), "PETG", process_overrides={"wall_loops": 7, "wal_loops": 1},
                                 filament_overrides={"nozzle_temperature": 250})
     assert result["ok"]
-    process = json.loads(Path(result["presets_written"]["process"]).read_text())
-    assert process["wall_loops"] == "7"
-    assert json.loads(Path(result["presets_written"]["filament"]).read_text())["nozzle_temperature"] == ["250"]
+    settings = _project_settings(result)
+    assert settings["wall_loops"] == "7" and settings["nozzle_temperature"] == ["250"]
+    assert "wall_loops" in settings["different_settings_to_system"][0].split(";")
     assert any("wal_loops" in w for w in result["plan"]["warnings"])
 
 
 def test_label_figures_reach_the_slicer(fake_env, cube_stl):
     result = server.slice_model(str(cube_stl), "Creality Ender PLA", bed_temp=50)
-    filament = json.loads(Path(result["presets_written"]["filament"]).read_text())
-    assert filament["nozzle_temperature"] == ["215"] and filament["hot_plate_temp"] == ["50"]
-    assert filament["filament_max_volumetric_speed"] == ["6.7"]
+    settings = _project_settings(result)
+    assert settings["nozzle_temperature"] == ["215"] and settings["hot_plate_temp"] == ["50"]
+    assert settings["filament_max_volumetric_speed"] == ["6.7"]
+
+
+def test_setting_missing_from_gcode_is_reported(fake_env, cube_stl):
+    result = server.slice_model(str(cube_stl), "PLA", process_overrides={"wall_loops": 96})
+    assert result["ok"] and result["settings_mismatched"] == ["wall_loops: asked for 96, G-code has 2"]
+    assert any("did not reach the G-code" in w for w in result["plan"]["warnings"])
+
+
+def test_designer_3mf_becomes_a_project_with_designer_supports(fake_env, tmp_path):
+    from conftest import make_3mf, box_triangles
+    model_3mf = make_3mf(tmp_path / "holder.3mf", box_triangles(30, 20, 10), {"enable_support": "1", "support_threshold_angle": "25"})
+    result = server.slice_model(str(model_3mf), "black PLA")
+    assert result["ok"] and result["project_3mf"], result
+    settings = _project_settings(result)
+    assert settings["enable_support"] == "1" and settings["support_threshold_angle"] == "25"
+    assert result["model"]["size_mm"] == [30.0, 20.0, 10.0] and result["settings_mismatched"] == []
+
+
+def test_auto_orient_builds_project_and_gcode_from_one_oriented_file(fake_env, cube_stl):
+    result = server.slice_model(str(cube_stl), "PLA", auto_orient=True)
+    assert result["ok"] and any("orientation" in n for n in result["notes"])
+    job = Path(result["job_dir"])
+    orient_argv = json.loads((job / "oriented" / "argv.json").read_text())
+    assert orient_argv[orient_argv.index("--orient") + 1] == "1" and "--export-stl" in orient_argv
+    assert result["model"]["file"] == str(job / "oriented" / "oriented.stl")
+
+
+def _project_settings(result: dict) -> dict:
+    import zipfile
+    with zipfile.ZipFile(result["project_3mf"]) as archive:
+        return json.loads(archive.read("Metadata/project_settings.config"))
 
 
 def test_slicer_failure_is_reported_not_raised(fake_env, cube_stl):

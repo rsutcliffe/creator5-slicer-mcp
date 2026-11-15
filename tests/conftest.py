@@ -77,6 +77,47 @@ def cube_stl(tmp_path: Path) -> Path:
     return _stl(tmp_path / "cube.stl", box_triangles(20, 20, 10))
 
 
+def make_3mf(path: Path, triangles: list, settings: dict | None = None, offset=(100.0, 100.0, 0.0)) -> Path:
+    """A 3MF laid out as Bambu Studio and OrcaSlicer write it: the mesh in a separate object file,
+    a modifier part that must be ignored, a second plate, and optional project settings."""
+    import zipfile
+    core = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
+    prod = "http://schemas.microsoft.com/3dmanufacturing/production/2015/06"
+    verts = [v for tri in triangles for v in tri]
+    def mesh(oid, tris_offset=0.0):
+        vx = "".join(f'<vertex x="{x + tris_offset}" y="{y}" z="{z}"/>' for x, y, z in verts)
+        tx = "".join(f'<triangle v1="{3*i}" v2="{3*i+1}" v3="{3*i+2}"/>' for i in range(len(triangles)))
+        return f'<object id="{oid}" type="model"><mesh><vertices>{vx}</vertices><triangles>{tx}</triangles></mesh></object>'
+    sub = f'<model unit="millimeter" xmlns="{core}"><resources>{mesh(1)}{mesh(2, 500.0)}</resources></model>'
+    root = (f'<model unit="millimeter" xmlns="{core}" xmlns:p="{prod}"><resources>'
+            f'<object id="3" type="model"><components>'
+            f'<component p:path="/3D/Objects/part.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>'
+            f'<component p:path="/3D/Objects/part.model" objectid="2" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>'
+            f'</components></object>{mesh(4)}</resources><build>'
+            f'<item objectid="3" transform="1 0 0 0 1 0 0 0 1 {offset[0]} {offset[1]} {offset[2]}" printable="1"/>'
+            f'<item objectid="4" transform="1 0 0 0 1 0 0 0 1 400 0 0" printable="1"/></build></model>')
+    cfg = ('<config><object id="3"><part id="1" subtype="normal_part"/><part id="2" subtype="modifier_part"/></object>'
+           '<object id="4"><part id="1" subtype="normal_part"/></object>'
+           '<plate><metadata key="plater_id" value="1"/><model_instance><metadata key="object_id" value="3"/></model_instance></plate>'
+           '<plate><metadata key="plater_id" value="2"/><model_instance><metadata key="object_id" value="4"/></model_instance></plate></config>')
+    rels = ('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>')
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("_rels/.rels", rels)
+        z.writestr("3D/3dmodel.model", root)
+        z.writestr("3D/Objects/part.model", sub)
+        z.writestr("Metadata/model_settings.config", cfg)
+        if settings is not None:
+            z.writestr("Metadata/project_settings.config", json.dumps(settings))
+    return path
+
+
+@pytest.fixture
+def mushroom_3mf(tmp_path: Path) -> Path:
+    stem = [[(x + 20, y + 20, z) for x, y, z in tri] for tri in box_triangles(5, 5, 40)]
+    return make_3mf(tmp_path / "mushroom.3mf", stem + box_triangles(45, 45, 5, z0=40))
+
+
 @pytest.fixture
 def mushroom_stl(tmp_path: Path) -> Path:
     """A thin stem with a wide cap: tall for its base, with a large overhang."""
@@ -85,23 +126,29 @@ def mushroom_stl(tmp_path: Path) -> Path:
 
 
 FAKE_SLICER = r'''#!/usr/bin/env python3
-import json, sys
+import json, shutil, sys, zipfile
 from pathlib import Path
 args = sys.argv[1:]
 if "--help" in args:
     print("FakeSlicer 9.9.9"); sys.exit(0)
 out = Path(args[args.index("--outputdir") + 1])
-settings = args[args.index("--load-settings") + 1].split(";")
-process = json.loads(Path(settings[1]).read_text())
+out.mkdir(parents=True, exist_ok=True)
+(out / "argv.json").write_text(json.dumps(args))
+if "--export-stl" in args:                     # orient: hand the model back as an STL
+    shutil.copyfile(args[-1], out / "oriented.stl"); sys.exit(0)
+with zipfile.ZipFile(args[-1]) as z:
+    process = json.loads(z.read("Metadata/project_settings.config"))
 if process.get("wall_loops") == "99":
     sys.stderr.write("simulated failure\n"); sys.exit(3)
-out.mkdir(parents=True, exist_ok=True)
-body = ("; HEADER_BLOCK_START\n; total estimated time: 1h 23m 45s\n; total layer number: 180\n; HEADER_BLOCK_END\nG1 X0\n"
+if process.get("wall_loops") == "96":          # a setting the slicer did not honour
+    process["wall_loops"] = "2"
+block = "".join(f"; {k} = {','.join(v) if isinstance(v, list) else v}\n" for k, v in process.items())
+body = ("; HEADER_BLOCK_START\n; total estimated time: 1h 23m 45s\n; total layer number: 180\n; HEADER_BLOCK_END\n"
+        "; CONFIG_BLOCK_START\n" + block + "; CONFIG_BLOCK_END\nG1 X0\n"
         "; filament used [mm] = 5000.5\n; filament used [g] = 15.25\n")
 if process.get("wall_loops") == "98":          # killed part-way through writing
     (out / "plate_1.gcode").write_text(body[:60]); sys.exit(-11)
 (out / "plate_1.gcode").write_text(body + ";end_gcode\n; EXECUTABLE_BLOCK_END\n")
-(out / "argv.json").write_text(json.dumps(args))
 if process.get("wall_loops") == "97":          # finishes the file, then crashes on the way out
     import os, signal
     os.kill(os.getpid(), signal.SIGSEGV)
