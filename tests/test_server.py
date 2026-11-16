@@ -393,3 +393,24 @@ def test_pause_before_a_height_is_written_and_found_in_the_gcode(fake_env, cube_
     assert 'top_z="3"' in xml and 'type="1"' in xml and 'gcode="M25"' in xml and '<mode value="SingleExtruder"/>' in xml
     plain = server.slice_model(str(cube_stl), "PLA")
     assert plain["pauses_at_z"] == [] and "Metadata/custom_gcode_per_layer.xml" not in zipfile.ZipFile(plain["project_3mf"]).namelist()
+
+
+def test_changed_filament_on_a_later_toolhead_is_embedded_as_its_own_preset(fake_env, colour_3mf):
+    """Flash Studio keeps changed values only for the first filament, so later ones travel as project presets."""
+    import zipfile
+    server.save_spool("hot petg", "PETG", nozzle_temp=250, bed_temp=70)
+    result = server.slice_model(str(colour_3mf), "PLA", other_filaments=["hot petg", "PLA"], nozzle_temp=205)
+    assert result["ok"] and result["settings_mismatched"] == []
+    with zipfile.ZipFile(result["project_3mf"]) as archive:
+        names = archive.namelist()
+        settings = json.loads(archive.read("Metadata/project_settings.config"))
+        preset = json.loads(archive.read("Metadata/filament_settings_1.config"))
+    # Toolhead 1 keeps its changes inline; toolhead 2 is embedded; toolhead 3 is the plain system preset.
+    assert settings["filament_settings_id"] == ["Flashforge PLA Basic @FF C5", "Flashforge PETG Pro @FF C5 (toolhead 2)",
+                                                "Flashforge PLA Basic @FF C5"]
+    assert "nozzle_temperature" in settings["different_settings_to_system"][1] and settings["different_settings_to_system"][2:4] == ["", ""]
+    assert settings["nozzle_temperature"] == ["205", "250", "210"]
+    assert preset["name"] == "Flashforge PETG Pro @FF C5 (toolhead 2)" and preset["filament_settings_id"] == [preset["name"]]
+    assert preset["inherits"] == "Flashforge PETG Pro @FF C5" and preset["from"] == "project"
+    assert preset["nozzle_temperature"] == ["250"] and preset["compatible_printers"] == ["Flashforge Creator 5 0.4 nozzle"]
+    assert "Metadata/filament_settings_2.config" not in names

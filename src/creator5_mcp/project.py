@@ -69,13 +69,20 @@ def colour_for(filament: str, default: str = "#161616") -> str:
 
 
 def project_settings(profiles_dir: Path, plan: dict, extra_process: dict | None = None,
-                     extra_filament: dict | None = None, colour: str = "#161616") -> tuple[dict, list[str]]:
+                     extra_filament: dict | None = None, colour: str = "#161616") -> tuple[dict, list[str], list[dict]]:
     """Merge the presets and the overrides into one project settings document.
 
     plan["filaments"], when present, lists one {"preset", "overrides", "colour"} per toolhead;
     otherwise the plan's single filament is used with `colour`. extra_filament applies to all.
-    Returns the document and the caller's override keys the presets do not define
-    (passed through, but worth flagging: a misspelt key is silently ignored by the slicer).
+    Returns the document, the caller's override keys the presets do not define (passed through,
+    but worth flagging: a misspelt key is silently ignored by the slicer), and the filament
+    presets to store inside the project.
+
+    Flash Studio lets only the first filament carry changed values against a system preset
+    (PresetBundle::load_config_file_config loads the others with LoadAndSelect::OnlyIfModified or
+    Never). A changed filament on toolhead 2 to 4 is therefore written as a preset of its own,
+    embedded in the project, and named in filament_settings_id. Without this Flash Studio swapped
+    toolhead 2 to another preset and dropped its label temperatures (seen on the machine, 16 Nov 2026).
     """
     slots = plan.get("filaments") or [{"preset": plan["filament_preset"], "overrides": plan["filament_overrides"], "colour": colour}]
     machine = profiles.flatten(profiles_dir, "machine", plan["machine_preset"])
@@ -84,8 +91,8 @@ def project_settings(profiles_dir: Path, plan: dict, extra_process: dict | None 
     unknown = [k for k in (extra_process or {}) if k not in process]
     process, _ = profiles.apply_overrides(process, process_over)
 
-    filaments, changed = [], []
-    for slot in slots:
+    filaments, changed, names, embedded = [], [], [], []
+    for index, slot in enumerate(slots):
         over = {**slot["overrides"], **(extra_filament or {})}
         flat = profiles.flatten(profiles_dir, "filament", slot["preset"])
         unknown += [k for k in (extra_filament or {}) if k not in flat and k not in unknown]
@@ -98,7 +105,16 @@ def project_settings(profiles_dir: Path, plan: dict, extra_process: dict | None 
             raise ProjectError(f"Refusing to build the project: the filament preset resolves to a diameter of {diameters} mm, "
                                f"but the Creator 5 uses {FILAMENT_DIAMETER} mm. Please report this.")
         filaments.append(flat)
-        changed.append(";".join(sorted(over)))
+        if index and over:
+            name = f"{slot['preset']} (toolhead {index + 1})"
+            embedded.append({**{k: v for k, v in flat.items() if k not in _NOT_SETTINGS},
+                             "name": name, "from": "project", "version": APPLICATION.split("-", 1)[1], "inherits": slot["preset"],
+                             "filament_settings_id": [name], "compatible_printers": flat.get("compatible_printers") or []})
+            names.append(name)
+            changed.append("")
+        else:
+            names.append(slot["preset"])
+            changed.append(";".join(sorted(over)))
 
     merged: dict = {}
     for preset in (machine, process):
@@ -116,7 +132,7 @@ def project_settings(profiles_dir: Path, plan: dict, extra_process: dict | None 
         "version": APPLICATION.split("-", 1)[1],
         "printer_settings_id": plan["machine_preset"],
         "print_settings_id": plan["process_preset"],
-        "filament_settings_id": [slot["preset"] for slot in slots],
+        "filament_settings_id": names,
         "filament_colour": [slot["colour"] for slot in slots],
         # Which toolhead each entry of a filament setting belongs to. Without it the slicer reads
         # toolhead 1's values for every toolhead (seen in the G-code; Flash Studio writes it on save).
@@ -125,7 +141,7 @@ def project_settings(profiles_dir: Path, plan: dict, extra_process: dict | None 
         "inherits_group": [""] * (len(slots) + 2),
         "different_settings_to_system": [";".join(sorted(process_over)), *changed, ""],
     })
-    return merged, unknown
+    return merged, unknown, embedded
 
 
 def _xml(text: str) -> str:
@@ -224,7 +240,7 @@ def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Pa
         loaded = model_mod.load_objects(model_path)   # STL, OBJ or 3MF, oriented and placed as the file has it
     except model_mod.ModelError as exc:
         raise ProjectError(str(exc)) from exc
-    settings, unknown = project_settings(profiles_dir, plan, extra_process, extra_filament, colour)
+    settings, unknown, embedded = project_settings(profiles_dir, plan, extra_process, extra_filament, colour)
     title = loaded["objects"][0]["name"]
     model_xml, config_xml, size = _documents(title, loaded["objects"], copies, len(settings["filament_settings_id"]))
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,6 +250,8 @@ def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Pa
         archive.writestr("3D/3dmodel.model", model_xml)
         archive.writestr("Metadata/model_settings.config", config_xml)
         archive.writestr("Metadata/project_settings.config", json.dumps(settings, indent=4))
+        for number, preset in enumerate(embedded, start=1):
+            archive.writestr(f"Metadata/filament_settings_{number}.config", json.dumps(preset, indent=4))
         if pause_before_z:
             # As _BBS_3MF_Exporter writes it: type 1 is a pause, at the print height of the layer it comes before.
             mode = "MultiExtruder" if len(settings["filament_settings_id"]) > 1 else "SingleExtruder"
