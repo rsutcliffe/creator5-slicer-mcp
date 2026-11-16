@@ -212,10 +212,12 @@ def _documents(title: str, objects: list[dict], copies: int, toolheads: int) -> 
 
 def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Path, copies: int = 1,
                   extra_process: dict | None = None, extra_filament: dict | None = None,
-                  colour: str = "#161616") -> dict:
+                  colour: str = "#161616", pause_before_z: float = 0) -> dict:
     """Create the .3mf project and return a short description of it.
 
-    colour is used only when the plan does not list its filaments."""
+    colour is used only when the plan does not list its filaments.
+    pause_before_z, in mm, pauses the print before the layer whose top is at that height,
+    with the printer's own pause command."""
     if copies < 1:
         raise ProjectError("copies must be at least 1")
     try:
@@ -232,6 +234,14 @@ def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Pa
         archive.writestr("3D/3dmodel.model", model_xml)
         archive.writestr("Metadata/model_settings.config", config_xml)
         archive.writestr("Metadata/project_settings.config", json.dumps(settings, indent=4))
+        if pause_before_z:
+            # As _BBS_3MF_Exporter writes it: type 1 is a pause, at the print height of the layer it comes before.
+            mode = "MultiExtruder" if len(settings["filament_settings_id"]) > 1 else "SingleExtruder"
+            archive.writestr("Metadata/custom_gcode_per_layer.xml",
+                             '<?xml version="1.0" encoding="utf-8"?>\n<custom_gcodes_per_layer>\n<plate>\n<plate_info id="1"/>\n'
+                             f'<layer top_z="{pause_before_z:g}" type="1" extruder="1" color="" extra="" '
+                             f'gcode="{_xml(str(settings.get("machine_pause_gcode") or ""))}"/>\n'
+                             f'<mode value="{mode}"/>\n</plate>\n</custom_gcodes_per_layer>\n')
     return {
         "project": str(out_path),
         "copies": copies,

@@ -137,9 +137,13 @@ When a print is done, say how it went. `record_print_result` keeps the outcome w
 .venv/bin/python -m creator5_mcp.cli --record-result PROJECT.3mf --outcome good --notes clean walls, supports came off easily
 ```
 
+## Pausing to embed something
+
+`pause_before_z` (or `--pause-before-z`) pauses the print before the layer whose top is at that height, using the printer's own pause command, so a magnet, nut or NFC tag can go into a pocket. The server confirms the pause in the G-code and reports it as `pauses_at_z`. Pick a height that is the top of a layer: with 0.2 mm layers and a 0.2 mm first layer, a pocket that ends at 2.8 mm needs `pause_before_z` 3.0.
+
 ## Multi-colour models
 
-The Creator 5 has four toolheads. A 3MF that assigns its parts to different filaments keeps its objects, its parts and those assignments, whether it was saved by Bambu Studio, OrcaSlicer or Flash Studio, or is a plain 3MF with colours as base materials. Colour painting on a Bambu or Orca model is kept too.
+The Creator 5 has four toolheads. A 3MF that assigns its parts to different filaments keeps its objects, its parts and those assignments, whether it was saved by Bambu Studio, OrcaSlicer or Flash Studio, or is a plain 3MF with colours as base materials. Colour painting on a Bambu or Orca model is kept too. A CAD export that names the toolhead only in a part number (`Logo_Black_Extruder2`) is read as well, and separate items whose boxes overlap, such as a logo set into a body, are joined into one object so they cannot be moved apart.
 
 `models/two_colour_test/build_test.py` writes a small two-colour test piece (two blocks side by side, about 12 minutes and 4 g). Print it before a long multi-colour job to prove toolhead changes and the purge tower.
 

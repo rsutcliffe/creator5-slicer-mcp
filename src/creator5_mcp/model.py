@@ -207,12 +207,21 @@ def _load_3mf(path: Path) -> dict:
             if item.get("printable", "1") == "0" or (plate_objects is not None and oid not in plate_objects):
                 continue
             m = _matrix(item.get("transform"))
+            top = next((o for o in root.iter(_CORE + "object") if o.get("id") == oid), None)
+            # Some CAD exports say which toolhead and what the part is only in a part number, e.g. "Logo_Black_Extruder2".
+            label = item.get("partnumber") or (top.get("partnumber") if top is not None else "") or ""
+            hint = re.search(r"extruder\D?(\d)", label, re.I)
             parts = [{**part, "tris": _apply(part["tris"], m) * scale}
-                     for part in parts_of(root_name, oid, oid, cfg_extruder.get((oid, None)))]
+                     for part in parts_of(root_name, oid, oid, cfg_extruder.get((oid, None)) or (int(hint.group(1)) if hint else None))]
             if parts:
-                top = next((o for o in root.iter(_CORE + "object") if o.get("id") == oid), None)
                 name = clean_name(cfg_name.get((oid, None)) or (top.get("name") if top is not None else "") or "")
+                if label and (not name or re.fullmatch(r"geometry_\d+", name)):
+                    name = label.replace("_", " ")
+                    for part in parts:
+                        part["name"] = name if len(parts) == 1 else part["name"]
                 objects.append({"name": name or parts[0]["name"], "parts": parts})
+        if "Metadata/model_settings.config" not in names:
+            objects = _join_touching(objects, clean_name(path.stem))
     if not objects:
         raise ModelError(f"{path.name} holds no printable mesh")
     return {"objects": objects, "colours": colours, "filaments": filaments, "notes": notes}
@@ -241,6 +250,28 @@ def convert_step(path: Path, out_dir: Path) -> Path:
             out_dir.rmdir()      # do not leave an empty folder behind in the prints folder
         detail = (result.stdout + result.stderr).strip().splitlines()
         raise ModelError(f"{path.name} could not be read as a STEP file." + (f" {detail[-1].strip()}" if detail else ""))
+    return out
+
+
+def _join_touching(objects: list[dict], name: str) -> list[dict]:
+    """In a plain 3MF, build items whose boxes overlap are parts of one thing (a logo set into a
+    body), saved as separate items by a CAD tool. Joined into one object they cannot be moved apart
+    in the slicer. Items that sit apart, such as two figures on a plate, stay separate objects."""
+    boxes = [(np.concatenate([p["tris"].reshape(-1, 3) for p in o["parts"]]).min(axis=0),
+              np.concatenate([p["tris"].reshape(-1, 3) for p in o["parts"]]).max(axis=0)) for o in objects]
+    group = list(range(len(objects)))
+    for i in range(len(objects)):
+        for j in range(i):
+            if np.all(boxes[i][0] <= boxes[j][1]) and np.all(boxes[j][0] <= boxes[i][1]):
+                old, new = group[i], group[j]
+                group = [new if g == old else g for g in group]
+    out = []
+    for g in dict.fromkeys(group):
+        members = [o for o, k in zip(objects, group) if k == g]
+        if len(members) == 1:
+            out.append(members[0])
+        else:
+            out.append({"name": name, "parts": [part for o in members for part in o["parts"]]})
     return out
 
 

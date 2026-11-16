@@ -174,6 +174,18 @@ def support_sections(gcode: Path) -> int:
         return sum(1 for line in handle if line.startswith(";TYPE:Support"))
 
 
+def pauses(gcode: Path) -> list[float]:
+    """The layer heights (top of layer, mm) the print pauses before."""
+    found, z = [], 0.0
+    with gcode.open("r", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            if line.startswith(";Z:"):
+                z = float(line[3:])
+            elif line.startswith(";PAUSE_PRINT"):
+                found.append(z)
+    return found
+
+
 def settings_in_gcode(gcode: Path) -> dict[str, str]:
     """The settings block the slicer writes at the top of the G-code."""
     out: dict[str, str] = {}

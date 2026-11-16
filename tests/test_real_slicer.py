@@ -86,3 +86,27 @@ def test_step_file_is_meshed_then_oriented_and_sliced_by_flash_studio(real_env):
     assert result["exit_code"] == 0 and result["settings_mismatched"] == []
     assert sorted(result["model"]["size_mm"]) == [12.0, 40.0, 60.0] and result["model"]["size_mm"][2] == 12.0
     assert "EXCLUDE_OBJECT_DEFINE NAME=plate" in Path(result["gcode"]).read_text(errors="ignore")
+
+
+def test_pause_lands_once_at_the_start_of_the_layer_asked_for(real_env, labelled_3mf):
+    """A two-colour part with an embedded-tag pause: Flash Studio pauses once, before the layer at 3.0 mm."""
+    from creator5_mcp import server
+    result = server.slice_model(str(labelled_3mf), "PLA", other_filaments=["PLA"], pause_before_z=3.0,
+                                process_overrides={"initial_layer_print_height": "0.2"})
+    assert result["ok"], result
+    assert result["pauses_at_z"] == [3.0] and result["settings_mismatched"] == []
+    lines = Path(result["gcode"]).read_text(errors="ignore").splitlines()
+    assert lines.count("M25") == 1
+    at = lines.index("M25")
+    before = [line for line in lines[:at] if line.startswith(";Z:")]
+    assert before[-1] == ";Z:3" and len(before) == 15            # 14 layers done, the 15th just begun
+    assert not any(line.startswith(("G1", "G2", "G3")) and " E" in line and "E-" not in line
+                   for line in lines[at - 6:at])                 # nothing extruded between the layer change and the pause
+    # The inlay is 0.6 mm tall, so toolhead 2 is used in the first three layers only.
+    layer, used = 0, set()
+    for line in lines:
+        if line.startswith(";Z:"):
+            layer += 1
+        elif line == "T1":
+            used.add(layer)
+    assert used and max(used) <= 3, used

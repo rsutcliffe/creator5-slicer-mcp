@@ -23,7 +23,8 @@ def profiles_dir(tmp_path: Path) -> Path:
     ff, lib = root / "Flashforge", root / "OrcaFilamentLibrary"
     _write(ff / "machine", {"type": "machine", "name": "fdm_machine_common", "printable_height": "256", "nozzle_diameter": ["0.4"] * 4})
     _write(ff / "machine", {"type": "machine", "name": "Flashforge Creator 5 0.4 nozzle", "inherits": "fdm_machine_common",
-                            "instantiation": "true", "printer_model": "Flashforge Creator 5"})
+                            "instantiation": "true", "printer_model": "Flashforge Creator 5",
+                            "machine_pause_gcode": "M25"})
     _write(ff / "process", {"type": "process", "name": "fdm_process_common", "wall_loops": "2", "line_width": "0.42",
                             "sparse_infill_density": "15%", "sparse_infill_pattern": "grid", "outer_wall_speed": "200",
                             "inner_wall_speed": "300", "enable_support": "0", "brim_type": "no_brim", "brim_width": "5",
@@ -194,6 +195,26 @@ def colour_3mf(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def labelled_3mf(tmp_path: Path) -> Path:
+    """A CAD export: a body and an inlay as two build items, toolheads named only in part numbers."""
+    import zipfile
+    core = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
+    def mesh(oid, triangles):
+        verts = [v for tri in triangles for v in tri]
+        vx = "".join(f'<vertex x="{x}" y="{y}" z="{z}"/>' for x, y, z in verts)
+        tx = "".join(f'<triangle v1="{3*i}" v2="{3*i+1}" v3="{3*i+2}"/>' for i in range(len(triangles)))
+        return f'<object id="{oid}" name="geometry_{oid - 1}" type="model"><mesh><vertices>{vx}</vertices><triangles>{tx}</triangles></mesh></object>'
+    inlay = [[(x + 10, y + 10, z) for x, y, z in tri] for tri in box_triangles(10, 10, 0.6)]
+    root = (f'<model unit="millimeter" xmlns="{core}"><resources>' + mesh(1, box_triangles(30, 40, 4)) + mesh(2, inlay)
+            + '</resources><build><item objectid="1" partnumber="Body_White_Extruder1"/>'
+            '<item objectid="2" partnumber="Logo_Black_Extruder2"/></build></model>')
+    path = tmp_path / "KeyTag_TwoColour.3mf"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("3D/3dmodel.model", root)
+    return path
+
+
+@pytest.fixture
 def mushroom_3mf(tmp_path: Path) -> Path:
     stem = [[(x + 20, y + 20, z) for x, y, z in tri] for tri in box_triangles(5, 5, 40)]
     return make_3mf(tmp_path / "mushroom.3mf", stem + box_triangles(45, 45, 5, z0=40))
@@ -226,8 +247,14 @@ if process.get("wall_loops") == "95":          # settings file rejected: the rea
 if process.get("wall_loops") == "96":          # a setting the slicer did not honour
     process["wall_loops"] = "2"
 block = "".join(f"; {k} = {','.join(v) if isinstance(v, list) else v}\n" for k, v in process.items())
+pause = ""
+with zipfile.ZipFile(args[-1]) as z:
+    if "Metadata/custom_gcode_per_layer.xml" in z.namelist():
+        import re
+        top = re.search(r'top_z="([0-9.]+)"', z.read("Metadata/custom_gcode_per_layer.xml").decode()).group(1)
+        pause = f";LAYER_CHANGE\n;Z:{top}\n;PAUSE_PRINT\nM25\n"
 body = ("; HEADER_BLOCK_START\n; total estimated time: 1h 23m 45s\n; total layer number: 180\n; HEADER_BLOCK_END\n"
-        "; CONFIG_BLOCK_START\n" + block + "; CONFIG_BLOCK_END\nG1 X0\n"
+        "; CONFIG_BLOCK_START\n" + block + "; CONFIG_BLOCK_END\nG1 X0\n" + pause +
         "; filament used [mm] = 5000.5\n; filament used [g] = 15.25\n")
 if process.get("wall_loops") == "98":          # killed part-way through writing
     (out / "plate_1.gcode").write_text(body[:60]); sys.exit(-11)

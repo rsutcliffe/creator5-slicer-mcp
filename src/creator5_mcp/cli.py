@@ -35,6 +35,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--auto-orient", action="store_true")
     parser.add_argument("--smooth-top", action="store_true", help="iron flat top surfaces for a smoother finish")
     parser.add_argument("--precise-fit", action="store_true", help="tighter outer dimensions for mating parts")
+    parser.add_argument("--pause-before-z", type=float, default=0, metavar="MM",
+                        help="pause before the layer whose top is at this height, to embed something")
     parser.add_argument("--open", action="store_true", help="open the project in the slicer when done")
     parser.add_argument("--save-spool", nargs="+", metavar="NAME",
                         help="remember a spool under this name, with --filament and the label figures, then exit")
@@ -64,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         args.supports, args.brim, copies=args.copies, auto_orient=args.auto_orient,
         smooth_top=args.smooth_top, precise_fit=args.precise_fit,
         nozzle_temp=args.nozzle_temp, bed_temp=args.bed_temp, max_speed=args.max_speed,
-        other_filaments=[_words(f) for f in args.also] or None)
+        other_filaments=[_words(f) for f in args.also] or None, pause_before_z=args.pause_before_z)
     if not result["ok"]:
         print("FAILED: " + result["error"])
         return 1

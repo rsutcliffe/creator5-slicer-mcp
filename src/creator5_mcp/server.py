@@ -351,6 +351,7 @@ def slice_model(
     bed_temp: int = 0,
     max_speed: int = 0,
     other_filaments: list[str] | None = None,
+    pause_before_z: float = 0,
 ) -> dict:
     """Slice a model for the Creator 5 with settings chosen for the filament and purpose.
 
@@ -383,6 +384,8 @@ def slice_model(
         bed_temp: Bed temperature in C from that label, or 0 to use the preset.
         max_speed: Fastest print speed in mm/s that label recommends, or 0 for no extra limit.
         other_filaments: Filaments in toolheads 2, 3 and 4, in order, for a multi-colour model.
+        pause_before_z: Pause the print before the layer whose top is at this height in mm, to embed a magnet,
+            nut or NFC tag. 0 for no pause. The layer below it is the last one printed before the pause.
     """
     try:
         settings = load_settings()
@@ -422,7 +425,7 @@ def slice_model(
                                precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed, shape_path=shaped,
                                other_filaments=other_filaments)
         made = project.write_project(profiles_dir, shaped, plan, job_dir / f"{name}.3mf", copies,
-                                     process_overrides, filament_overrides)
+                                     process_overrides, filament_overrides, pause_before_z=pause_before_z)
         result = slicer.slice_project(settings, Path(made["project"]), job_dir)
         result["notes"] = notes + result["notes"]
         chosen = {**plan["process_overrides"], **(process_overrides or {}), **(filament_overrides or {})}
@@ -436,6 +439,16 @@ def slice_model(
             plan["warnings"].append(
                 "These override keys are not in the base preset and may be misspelt: "
                 + ", ".join(made["unknown_override_keys"]))
+        paused_at = slicer.pauses(Path(result["gcode"]))
+        if pause_before_z:
+            if not made["settings"].get("machine_pause_gcode"):
+                plan["warnings"].append("The printer preset has no pause command, so the pause will do nothing.")
+            if [round(z, 3) for z in paused_at] != [round(pause_before_z, 3)]:
+                plan["warnings"].append(f"A pause before {pause_before_z:g} mm was asked for, but the G-code pauses at "
+                                        f"{paused_at or 'no height'}. Pick a height that is the top of a layer.")
+            else:
+                result["notes"].append(f"The print pauses before the layer at {pause_before_z:g} mm, with the last layer printed "
+                                       f"ending {made['settings'].get('layer_height')} mm below. Resume from the printer when ready.")
         # One bed, one temperature: the slicer heats it to the highest any toolhead asks for.
         beds = [float(v) for v in made["settings"].get("textured_plate_temp", [])]
         if beds and max(beds) - min(beds) >= 10:
@@ -454,7 +467,7 @@ def slice_model(
                 f"Supports are off, but {analysis['overhang_area_mm2']:g} mm² of the underside is flatter than "
                 f"{analysis['support_angle']:g} degrees and will print over thin air. Turn supports on unless that is intended.")
         return {"ok": True, "project_3mf": made["project"], **result, "objects": made["objects"],
-                "supports_on": supports_on, "support_sections_in_gcode": supports_printed,
+                "supports_on": supports_on, "support_sections_in_gcode": supports_printed, "pauses_at_z": paused_at,
                 "settings_checked_in_gcode": len(expected) - len(mismatched), "settings_mismatched": mismatched,
                 "plan": plan, "model": analysis}
     except _ERRORS as exc:

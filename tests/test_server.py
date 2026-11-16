@@ -366,3 +366,30 @@ def test_print_result_is_recorded_with_what_was_changed_by_hand(fake_env, cube_s
     assert "2 results so far" in capsys.readouterr().out
     assert "outcome must be" in server.record_print_result(job["project_3mf"], "perfect")["error"]
     assert "not a slicer project" in server.record_print_result(str(cube_stl), "good")["error"]
+
+
+def test_part_number_labels_give_toolheads_and_touching_parts_become_one_object(fake_env, labelled_3mf, colour_3mf):
+    import zipfile
+    from creator5_mcp import model
+    loaded = model.load_objects(labelled_3mf)
+    assert [(o["name"], [(p["name"], p["extruder"]) for p in o["parts"]]) for o in loaded["objects"]] == [
+        ("KeyTag_TwoColour", [("Body White Extruder1", 1), ("Logo Black Extruder2", 2)])]
+    # Parts that sit apart stay separate objects.
+    assert [o["name"] for o in model.load_objects(colour_3mf)["objects"]] == ["Figure", "Plinth"]
+    result = server.slice_model(str(labelled_3mf), "white PETG", other_filaments=["black PETG"])
+    assert result["ok"] and result["objects"] == ["KeyTag_TwoColour"] and len(result["plan"]["filaments"]) == 2
+    with zipfile.ZipFile(result["project_3mf"]) as archive:
+        config = archive.read("Metadata/model_settings.config").decode()
+    assert config.count("<object ") == 1 and config.count("<part ") == 2
+    assert [int(v) for v in __import__("re").findall(r'key="extruder" value="(\d)"', config)] == [1, 1, 2]
+
+
+def test_pause_before_a_height_is_written_and_found_in_the_gcode(fake_env, cube_stl):
+    import zipfile
+    result = server.slice_model(str(cube_stl), "PLA", pause_before_z=3.0)
+    assert result["ok"] and result["pauses_at_z"] == [3.0] and any("pauses before the layer at 3 mm" in n for n in result["notes"])
+    with zipfile.ZipFile(result["project_3mf"]) as archive:
+        xml = archive.read("Metadata/custom_gcode_per_layer.xml").decode()
+    assert 'top_z="3"' in xml and 'type="1"' in xml and 'gcode="M25"' in xml and '<mode value="SingleExtruder"/>' in xml
+    plain = server.slice_model(str(cube_stl), "PLA")
+    assert plain["pauses_at_z"] == [] and "Metadata/custom_gcode_per_layer.xml" not in zipfile.ZipFile(plain["project_3mf"]).namelist()
