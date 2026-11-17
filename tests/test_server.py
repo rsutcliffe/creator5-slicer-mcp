@@ -414,3 +414,23 @@ def test_changed_filament_on_a_later_toolhead_is_embedded_as_its_own_preset(fake
     assert preset["inherits"] == "Flashforge PETG Pro @FF C5" and preset["from"] == "project"
     assert preset["nozzle_temperature"] == ["250"] and preset["compatible_printers"] == ["Flashforge Creator 5 0.4 nozzle"]
     assert "Metadata/filament_settings_2.config" not in names
+
+
+def test_a_preset_saved_in_flash_studio_is_named_instead_of_embedded(fake_env, colour_3mf):
+    import zipfile
+    folder = fake_env / "flash_studio_user" / "abc123" / "filament"
+    folder.mkdir(parents=True)
+    (folder / "My PETG.json").write_text(json.dumps({
+        "name": "My PETG", "from": "User", "inherits": "Flashforge PETG Pro @FF C5", "version": "2.4.0.10",
+        "filament_settings_id": ["My PETG"], "filament_extruder_variant": ["Direct Drive Standard"],
+        "nozzle_temperature": ["250"], "nozzle_temperature_initial_layer": ["250"],
+        "hot_plate_temp": ["70"], "hot_plate_temp_initial_layer": ["70"],
+        "textured_plate_temp": ["70"], "textured_plate_temp_initial_layer": ["70"]}))
+    (folder / "Other.json").write_text(json.dumps({"name": "Other", "inherits": "Flashforge PETG Pro @FF C5", "nozzle_temperature": ["240"]}))
+    server.save_spool("hot petg", "PETG", nozzle_temp=250, bed_temp=70)
+    result = server.slice_model(str(colour_3mf), "PLA", other_filaments=["hot petg"])
+    with zipfile.ZipFile(result["project_3mf"]) as archive:
+        names = archive.namelist()
+        settings = json.loads(archive.read("Metadata/project_settings.config"))
+    assert settings["filament_settings_id"][1] == "My PETG" and settings["nozzle_temperature"][1] == "250"
+    assert settings["different_settings_to_system"][2] == "" and not any("filament_settings_" in n for n in names)

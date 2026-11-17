@@ -51,6 +51,27 @@ class ProjectError(RuntimeError):
 
 FILAMENT_DIAMETER = 1.75  # mm, the only size the Creator 5 takes
 
+# Where Flash Studio keeps presets the owner saved in its window (macOS).
+USER_PRESETS = Path.home() / "Library" / "Application Support" / "Orca-Flashforge" / "user"
+_PRESET_BOOKKEEPING = {"name", "from", "inherits", "version", "filament_settings_id", "filament_extruder_variant",
+                       "filament_adhesiveness_category"}
+
+
+def saved_filament_preset(parent: str, overrides: dict, user_dir: Path | None = None) -> str | None:
+    """The name of a filament preset saved in Flash Studio that is `parent` with exactly these changes."""
+    wanted = {k: str(v) for k, v in overrides.items()}
+    for path in sorted((user_dir or USER_PRESETS).glob("*/filament/*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or data.get("inherits") != parent or not data.get("name"):
+            continue
+        changed = {k: str(v[0] if isinstance(v, list) and v else v) for k, v in data.items() if k not in _PRESET_BOOKKEEPING}
+        if changed == wanted:
+            return data["name"]
+    return None
+
 COLOURS = {"black": "#161616", "white": "#F2F2F2", "grey": "#8C8C8C", "gray": "#8C8C8C", "silver": "#C0C0C0",
            "red": "#C8102E", "orange": "#F26722", "yellow": "#FFD100", "green": "#2E8B57", "blue": "#1F5AA6",
            "purple": "#6A3D9A", "pink": "#F4A6C6", "brown": "#7B4A2A", "gold": "#D4AF37", "beige": "#E8D8B0",
@@ -105,7 +126,12 @@ def project_settings(profiles_dir: Path, plan: dict, extra_process: dict | None 
             raise ProjectError(f"Refusing to build the project: the filament preset resolves to a diameter of {diameters} mm, "
                                f"but the Creator 5 uses {FILAMENT_DIAMETER} mm. Please report this.")
         filaments.append(flat)
-        if index and over:
+        saved = saved_filament_preset(slot["preset"], over) if index and over else None
+        if saved:
+            # A preset the owner saved in Flash Studio already holds these values: name it, change nothing.
+            names.append(saved)
+            changed.append("")
+        elif index and over:
             name = f"{slot['preset']} (toolhead {index + 1})"
             embedded.append({**{k: v for k, v in flat.items() if k not in _NOT_SETTINGS},
                              "name": name, "from": "project", "version": APPLICATION.split("-", 1)[1], "inherits": slot["preset"],

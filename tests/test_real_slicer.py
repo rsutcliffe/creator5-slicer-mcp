@@ -17,6 +17,7 @@ def real_env(tmp_path, monkeypatch):
     monkeypatch.setenv("ORCA_SLICER_PATH", str(FLASH_STUDIO))
     monkeypatch.setenv("ORCA_PROFILES_DIR", str(FLASH_STUDIO.parents[1] / "Resources" / "profiles"))
     monkeypatch.setenv("C5_OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setattr("creator5_mcp.project.USER_PRESETS", tmp_path / "flash_studio_user")
     return tmp_path
 
 

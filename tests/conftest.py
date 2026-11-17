@@ -273,4 +273,5 @@ def fake_env(tmp_path: Path, profiles_dir: Path, monkeypatch) -> Path:
     monkeypatch.setenv("ORCA_SLICER_PATH", str(slicer))
     monkeypatch.setenv("ORCA_PROFILES_DIR", str(profiles_dir))
     monkeypatch.setenv("C5_OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setattr("creator5_mcp.project.USER_PRESETS", tmp_path / "flash_studio_user")   # not the owner's real presets
     return tmp_path
