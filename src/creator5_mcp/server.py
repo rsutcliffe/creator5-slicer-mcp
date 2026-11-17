@@ -258,6 +258,23 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
                                       max_flow=spool["max_flow"] or None)
             preset, overrides, material = sub["filament_preset"], sub["filament_overrides"], sub["material"]
             plan["warnings"] += [w for w in sub["warnings"] if w not in plan["warnings"]]
+            if overrides:
+                # Flash Studio keeps changed filament values on toolhead 1 only, and swaps anything else that is
+                # not a stock preset for a generic one. So this toolhead gets a stock preset of the same material.
+                # The bed is shared and the hottest request wins, so the nearest bed temperature is chosen first,
+                # then the nearest nozzle temperature, which affects this toolhead alone.
+                stock = profiles.filament_presets(profiles_dir, nozzle, pro)
+                want_nozzle = float(overrides.get("nozzle_temperature") or stock[preset]["nozzle_temperature"])
+                want_bed = float(overrides.get("textured_plate_temp") or stock[preset]["bed_temperature"])
+                kind = stock[preset]["type"]
+                preset = min((n for n in stock if stock[n]["type"] == kind and "CF" not in n and "GF" not in n),
+                             key=lambda n: (abs(float(stock[n]["bed_temperature"]) - want_bed),
+                                            abs(float(stock[n]["nozzle_temperature"]) - want_nozzle), n != preset, n))
+                plan["warnings"].append(
+                    f"Toolhead {i + 1}: Flash Studio keeps a spool's own figures on toolhead 1 only. It uses the stock preset "
+                    f"'{preset}': nozzle {stock[preset]['nozzle_temperature']} C and bed {stock[preset]['bed_temperature']} C, "
+                    f"where {want_nozzle:g} C and {want_bed:g} C were asked for.")
+                overrides = {}
             # The other material's own process needs: the slower speed wins, and nothing already chosen is replaced.
             for key, value in recommend.match_material(spool["filament"]).process.items():
                 current = plan["process_overrides"].get(key)
@@ -428,9 +445,8 @@ def slice_model(
                                      process_overrides, filament_overrides, pause_before_z=pause_before_z)
         result = slicer.slice_project(settings, Path(made["project"]), job_dir)
         result["notes"] = notes + result["notes"]
-        chosen = {**plan["process_overrides"], **(process_overrides or {}), **(filament_overrides or {})}
-        for slot in plan["filaments"]:
-            chosen.update(slot["overrides"])
+        chosen = {**plan["process_overrides"], **(process_overrides or {}), **(filament_overrides or {}),
+                  **plan["filaments"][0]["overrides"]}
         expected = {k: made["settings"][k] for k in chosen}
         mismatched = slicer.check_settings(Path(result["gcode"]), expected)
         if mismatched:

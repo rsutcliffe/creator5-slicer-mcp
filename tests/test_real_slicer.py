@@ -17,7 +17,6 @@ def real_env(tmp_path, monkeypatch):
     monkeypatch.setenv("ORCA_SLICER_PATH", str(FLASH_STUDIO))
     monkeypatch.setenv("ORCA_PROFILES_DIR", str(FLASH_STUDIO.parents[1] / "Resources" / "profiles"))
     monkeypatch.setenv("C5_OUTPUT_DIR", str(tmp_path / "out"))
-    monkeypatch.setattr("creator5_mcp.project.USER_PRESETS", tmp_path / "flash_studio_user")
     return tmp_path
 
 
@@ -64,17 +63,31 @@ def test_multi_colour_project_prints_each_part_with_its_own_toolhead(real_env, c
 
 
 def test_each_toolhead_keeps_its_own_filament_settings(real_env, colour_3mf):
-    """Toolhead 1 has label figures; toolheads 2 and 3 must keep their own presets' values, not copy them."""
+    """Toolhead 1 has label figures; toolheads 2 and 3 keep their own presets' values."""
     from creator5_mcp import server
     result = server.slice_model(str(colour_3mf), "ender pla", other_filaments=["PLA", "PETG"])
     assert result["ok"], result
     assert result["settings_mismatched"] == [], result["settings_mismatched"]
     gcode = Path(result["gcode"]).read_text(errors="ignore")
     assert "; nozzle_temperature = 215,210,255" in gcode
+    assert "; filament_max_volumetric_speed = 6.7," in gcode and "; filament_max_volumetric_speed = 6.7,6.7" not in gcode
     # The real presets differ in bed temperature, the slicer heats to the highest, and the plan says so.
     assert "M140 S85" in gcode and "M140 S60" not in gcode
     assert any("bed will run at 85 C" in w for w in result["plan"]["warnings"])
-    assert "; filament_max_volumetric_speed = 6.7," in gcode and "; filament_max_volumetric_speed = 6.7,6.7" not in gcode
+
+
+def test_a_spool_on_toolhead_2_gets_the_nearest_stock_preset(real_env, colour_3mf):
+    """Elegoo Rapid PETG, 255 C and a 70 C bed, on toolheads 1 and 2: the second becomes the stock PETG
+    with the coolest bed, which is what Flash Studio itself slices."""
+    from creator5_mcp import server
+    server.save_spool("white petg", "Elegoo Rapid HS PETG", nozzle_temp=255, bed_temp=70, colour="white")
+    server.save_spool("black petg", "Elegoo Rapid HS PETG", nozzle_temp=255, bed_temp=70, colour="black")
+    result = server.slice_model(str(colour_3mf), "white petg", other_filaments=["black petg"])
+    assert result["ok"] and result["settings_mismatched"] == [], result
+    gcode = Path(result["gcode"]).read_text(errors="ignore")
+    assert '; filament_settings_id = "Flashforge HS PETG @FF C5";"Generic HS PETG @FF C5";' in gcode
+    assert "; nozzle_temperature = 255,235," in gcode and "; textured_plate_temp = 70,80," in gcode and "M140 S80" in gcode
+    assert any("bed will run at 80 C" in w for w in result["plan"]["warnings"])
 
 
 def test_step_file_is_meshed_then_oriented_and_sliced_by_flash_studio(real_env):

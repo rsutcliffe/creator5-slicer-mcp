@@ -163,13 +163,22 @@ def test_multi_colour_3mf_keeps_objects_parts_and_toolheads(fake_env, colour_3mf
     assert result["settings_mismatched"] == []
 
 
-def test_filaments_wanting_different_bed_temperatures_are_flagged(fake_env, colour_3mf):
-    # Toolhead 2's spool asks for an 85 C bed; toolheads 1 and 3 are at the preset's 65 C.
-    server.save_spool("hot petg", "PETG", bed_temp=85)
-    result = server.slice_model(str(colour_3mf), "PLA", other_filaments=["hot petg"])
-    warning = next(w for w in result["plan"]["warnings"] if "bed will run" in w)
-    assert "85 C" in warning and "65, 85, 65 C by toolhead" in warning and "toolhead 1 and 3" in warning
-    assert not any("bed will run" in w for w in server.slice_model(str(colour_3mf), "PLA")["plan"]["warnings"])
+def test_only_toolhead_1_carries_a_spools_own_figures(fake_env, colour_3mf):
+    """Flash Studio swaps any changed filament on toolheads 2 to 4 for a generic preset, so those get the
+    nearest stock preset: nearest bed first, since the bed is shared, then nearest nozzle."""
+    server.save_spool("my pla", "PLA", nozzle_temp=205, bed_temp=55)
+    server.save_spool("warm pla", "PLA", nozzle_temp=222, bed_temp=65)
+    result = server.slice_model(str(colour_3mf), "my pla", other_filaments=["warm pla", "PLA"])
+    assert result["ok"] and result["settings_mismatched"] == [], result
+    settings = _project_settings(result)
+    # Toolhead 1 keeps 205 and 55; toolhead 2 becomes the stock preset nearest 65 and 222; toolhead 3 is untouched.
+    assert settings["filament_settings_id"] == ["Flashforge PLA Basic @FF C5", "Generic PLA @FF C5", "Flashforge PLA Basic @FF C5"]
+    assert settings["nozzle_temperature"] == ["205", "220", "210"] and settings["textured_plate_temp"] == ["55", "65", "65"]
+    changed = settings["different_settings_to_system"]
+    assert "nozzle_temperature" in changed[1] and changed[2:] == ["", "", ""]
+    assert any("Toolhead 2" in w and "Generic PLA @FF C5" in w and "222 C and 65 C were asked for" in w for w in result["plan"]["warnings"])
+    # The bed is shared and the hottest wins, which the plan says when toolheads are 10 C or more apart.
+    assert any("bed will run at 65 C" in w and "toolhead 1" in w for w in result["plan"]["warnings"])
 
 
 def test_check_setup_says_which_code_is_running(fake_env, monkeypatch):
@@ -393,44 +402,3 @@ def test_pause_before_a_height_is_written_and_found_in_the_gcode(fake_env, cube_
     assert 'top_z="3"' in xml and 'type="1"' in xml and 'gcode="M25"' in xml and '<mode value="SingleExtruder"/>' in xml
     plain = server.slice_model(str(cube_stl), "PLA")
     assert plain["pauses_at_z"] == [] and "Metadata/custom_gcode_per_layer.xml" not in zipfile.ZipFile(plain["project_3mf"]).namelist()
-
-
-def test_changed_filament_on_a_later_toolhead_is_embedded_as_its_own_preset(fake_env, colour_3mf):
-    """Flash Studio keeps changed values only for the first filament, so later ones travel as project presets."""
-    import zipfile
-    server.save_spool("hot petg", "PETG", nozzle_temp=250, bed_temp=70)
-    result = server.slice_model(str(colour_3mf), "PLA", other_filaments=["hot petg", "PLA"], nozzle_temp=205)
-    assert result["ok"] and result["settings_mismatched"] == []
-    with zipfile.ZipFile(result["project_3mf"]) as archive:
-        names = archive.namelist()
-        settings = json.loads(archive.read("Metadata/project_settings.config"))
-        preset = json.loads(archive.read("Metadata/filament_settings_1.config"))
-    # Toolhead 1 keeps its changes inline; toolhead 2 is embedded; toolhead 3 is the plain system preset.
-    assert settings["filament_settings_id"] == ["Flashforge PLA Basic @FF C5", "Flashforge PETG Pro @FF C5 (toolhead 2)",
-                                                "Flashforge PLA Basic @FF C5"]
-    assert "nozzle_temperature" in settings["different_settings_to_system"][1] and settings["different_settings_to_system"][2:4] == ["", ""]
-    assert settings["nozzle_temperature"] == ["205", "250", "210"]
-    assert preset["name"] == "Flashforge PETG Pro @FF C5 (toolhead 2)" and preset["filament_settings_id"] == [preset["name"]]
-    assert preset["inherits"] == "Flashforge PETG Pro @FF C5" and preset["from"] == "project"
-    assert preset["nozzle_temperature"] == ["250"] and preset["compatible_printers"] == ["Flashforge Creator 5 0.4 nozzle"]
-    assert "Metadata/filament_settings_2.config" not in names
-
-
-def test_a_preset_saved_in_flash_studio_is_named_instead_of_embedded(fake_env, colour_3mf):
-    import zipfile
-    folder = fake_env / "flash_studio_user" / "abc123" / "filament"
-    folder.mkdir(parents=True)
-    (folder / "My PETG.json").write_text(json.dumps({
-        "name": "My PETG", "from": "User", "inherits": "Flashforge PETG Pro @FF C5", "version": "2.4.0.10",
-        "filament_settings_id": ["My PETG"], "filament_extruder_variant": ["Direct Drive Standard"],
-        "nozzle_temperature": ["250"], "nozzle_temperature_initial_layer": ["250"],
-        "hot_plate_temp": ["70"], "hot_plate_temp_initial_layer": ["70"],
-        "textured_plate_temp": ["70"], "textured_plate_temp_initial_layer": ["70"]}))
-    (folder / "Other.json").write_text(json.dumps({"name": "Other", "inherits": "Flashforge PETG Pro @FF C5", "nozzle_temperature": ["240"]}))
-    server.save_spool("hot petg", "PETG", nozzle_temp=250, bed_temp=70)
-    result = server.slice_model(str(colour_3mf), "PLA", other_filaments=["hot petg"])
-    with zipfile.ZipFile(result["project_3mf"]) as archive:
-        names = archive.namelist()
-        settings = json.loads(archive.read("Metadata/project_settings.config"))
-    assert settings["filament_settings_id"][1] == "My PETG" and settings["nozzle_temperature"][1] == "250"
-    assert settings["different_settings_to_system"][2] == "" and not any("filament_settings_" in n for n in names)
