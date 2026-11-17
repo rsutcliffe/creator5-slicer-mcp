@@ -49,7 +49,9 @@ def test_best_quality_uses_the_thinner_creator_5_preset(real_env):
 
 def test_multi_colour_project_prints_each_part_with_its_own_toolhead(real_env, colour_3mf):
     from creator5_mcp import server
-    result = server.slice_model(str(colour_3mf), "black PLA", other_filaments=["white PLA", "gold silk PLA"])
+    # exclude_object makes the slicer write each object's name into the G-code (off by default since Flash Studio 1.7.22).
+    result = server.slice_model(str(colour_3mf), "black PLA", other_filaments=["white PLA", "gold silk PLA"],
+                                process_overrides={"exclude_object": "1"})
     assert result["ok"], result
     assert result["exit_code"] == 0 and result["settings_mismatched"] == []
     gcode = Path(result["gcode"]).read_text(errors="ignore")
@@ -95,7 +97,8 @@ def test_step_file_is_meshed_then_oriented_and_sliced_by_flash_studio(real_env):
     from conftest import write_step_box
     from creator5_mcp import server
     # Stood on its smallest face: Flash Studio's orienter should lay it flat.
-    result = server.slice_model(str(write_step_box(real_env / "plate.step", 12, 40, 60)), "PLA", auto_orient=True)
+    result = server.slice_model(str(write_step_box(real_env / "plate.step", 12, 40, 60)), "PLA", auto_orient=True,
+                                process_overrides={"exclude_object": "1"})
     assert result["ok"], result
     assert result["exit_code"] == 0 and result["settings_mismatched"] == []
     assert sorted(result["model"]["size_mm"]) == [12.0, 40.0, 60.0] and result["model"]["size_mm"][2] == 12.0
