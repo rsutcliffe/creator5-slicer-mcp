@@ -320,11 +320,13 @@ def load_mesh(path: Path) -> tuple[np.ndarray, list[str]]:
     return np.concatenate([part["tris"] for obj in loaded["objects"] for part in obj["parts"]]), loaded["notes"]
 
 
-def thin_walls(tris: np.ndarray, limit: float, pairs: int = 40_000_000) -> dict:
+def thin_walls(tris: np.ndarray, limit: float, pairs: int = 40_000_000, gaps: bool = False) -> dict:
     """How much of one part's upright wall is thinner than limit (mm), measured through the part.
 
     From a sample of upright faces a ray runs straight into the part; where it comes out is the
     wall's thickness there. Returns the wall area thinner than limit and the typical thickness of it.
+    With gaps, the ray runs out of the part instead, and what it finds is the width of the slot
+    between that wall and the next one of the same part.
     """
     cross = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
     twice = np.linalg.norm(cross, axis=1)
@@ -339,7 +341,7 @@ def thin_walls(tris: np.ndarray, limit: float, pairs: int = 40_000_000) -> dict:
     v0, e1, e2 = tris[:, 0], tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]
     thin_area, found, lowest = 0.0, [], None
     for i in picked:
-        way = -cross[i] / twice[i]
+        way = cross[i] / twice[i] * (1 if gaps else -1)
         start = tris[i].mean(axis=0)
         end = start + way * limit
         near = np.flatnonzero(np.all(hi >= np.minimum(start, end) - 1e-6, axis=1) & np.all(lo <= np.maximum(start, end) + 1e-6, axis=1))
@@ -385,7 +387,7 @@ def designer_settings(path: Path) -> dict:
     return out
 
 
-THIN_WALL_MM2 = 5.0   # wall area thinner than two nozzle widths before it is worth a warning
+THIN_WALL_MM2 = 5.0   # wall area thinner than two nozzle widths, or facing a gap narrower than one, before it is worth a warning
 
 
 def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE, nozzle: float = 0.4) -> dict:
@@ -393,7 +395,8 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE, nozzle: fl
 
     support_angle is the slicer's support_threshold_angle: a downward face flatter
     than this, measured from the horizontal, needs support.
-    nozzle is the nozzle diameter in mm; detail thinner than two of its lines is reported as fine_detail.
+    nozzle is the nozzle diameter in mm; detail thinner than two of its lines is reported as fine_detail,
+    and slots narrower than one line as narrow_gaps.
     """
     if not path.is_file():
         raise ModelError(f"Model not found: {path}")
@@ -417,9 +420,12 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE, nozzle: fl
     overhang_area = float(area[overhang].sum())
     total_area = float(area.sum())
     footprint_min = float(min(size[0], size[1]))
-    fine = []
+    fine, slots = [], []
     for obj in loaded["objects"]:
         for part in obj["parts"]:
+            gap = thin_walls(part["tris"], nozzle, gaps=True)
+            if gap["area_mm2"] / 2 >= THIN_WALL_MM2:        # a slot has two walls, and both were counted
+                slots.append({"part": part["name"], "width_mm": gap["thickness_mm"], "area_mm2": round(gap["area_mm2"] / 2, 1)})
             thin = thin_walls(part["tris"], 2 * nozzle)
             if thin["area_mm2"] >= THIN_WALL_MM2:
                 fine.append({"part": part["name"], "thickness_mm": thin["thickness_mm"], "area_mm2": thin["area_mm2"],
@@ -442,5 +448,6 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE, nozzle: fl
         "filaments_needed": filaments_needed(loaded),
         "colours": loaded["colours"],
         "fine_detail": fine,
+        "narrow_gaps": slots,
         "notes": notes,
     }

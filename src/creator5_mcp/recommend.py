@@ -304,6 +304,12 @@ def recommend(
             f"{line_width:g} mm wide, so that is one or two passes: small lettering and thin lines will print soft or smudged. "
             f"Make the detail wider than {2 * float(nozzle):g} mm, or fit a smaller nozzle. "
             "(Key tag wordmark, 0.6 to 0.8 mm strokes on the 0.4 mm nozzle, printed smudged, 17 Nov 2026.)")
+    for slot in (shape or {}).get("narrow_gaps", []):
+        # Rule of thumb, not yet seen on a print: a slot narrower than one line has no room for the nozzle's own spread.
+        warnings.append(
+            f"'{slot['part']}' has gaps about {slot['width_mm']:g} mm wide, narrower than one {nozzle} mm nozzle line. "
+            "Slots, engraved lines and the spaces between letters that narrow tend to close up or fuse. "
+            f"Open them to more than {float(nozzle):g} mm, or fit a smaller nozzle.")
     if shape and shape.get("fine_detail"):
         if base.get("wall_generator") != "arachne":
             overrides["wall_generator"] = "arachne"

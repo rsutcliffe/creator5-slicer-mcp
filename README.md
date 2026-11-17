@@ -180,7 +180,7 @@ This server never sends anything to the printer. Flash Studio's own Print button
 - Every toolhead shares one bed. The slicer heats it to the highest temperature any filament asks for; when filaments differ by 10 C or more, a warning says which toolhead that is too hot for.
 - Detail thinner than two nozzle lines (0.8 mm on the 0.4 mm nozzle) prints soft. The server measures it and warns, and switches to variable-width walls, but it cannot make a 0.4 mm nozzle draw a 0.6 mm letter stroke cleanly.
 - No setting smooths the underside: it copies the build plate.
-- The fine detail measure samples dense meshes and looks at walls only, not at narrow gaps.
+- The fine detail and narrow gap measures sample dense meshes, so a very small patch can be missed. They look at upright walls only.
 - The recommended values are reasoned starting points, not measured optima. See [docs/SETTINGS.md](docs/SETTINGS.md).
 
 ## Development

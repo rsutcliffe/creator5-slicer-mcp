@@ -72,6 +72,8 @@ Each part's upright walls are measured through the part. Where 5 mm² or more of
 - sets `wall_generator = arachne`, so a thin stroke gets one line of the right width;
 - when that detail sits on the bed, slows the first layer to 20 mm/s and its infill to 30 mm/s.
 
+A slot between two walls of one part that is narrower than one nozzle width (0.4 mm), over 5 mm² or more, gets a warning that it may close up. This is a rule of thumb, not yet seen on a print, and changes no setting. The key tag has 3.8 mm² of 0.2 mm gaps in its logo, under the threshold.
+
 Evidence: the key tag wordmark, strokes of 0.6 to 0.8 mm. With classic walls it blurred; with Arachne and the slow first layer it read cleanly but stayed short of a professional finish (eight tags, 16 and 17 Nov 2026). On that model the measure finds 0.63 mm in the logo and 0.47 mm in the body, the slivers of white inside the letters.
 
 ## Evidence from prints

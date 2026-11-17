@@ -268,3 +268,19 @@ def test_smooth_finish_thins_the_layers_irons_the_top_and_says_what_it_cannot_fi
     assert recommend.recommend(profiles_dir, "PLA", quality="best", finish="smooth")["layer_height_mm"] <= smooth["layer_height_mm"]
     with pytest.raises(recommend.RecommendError):
         recommend.recommend(profiles_dir, "PLA", finish="glossy")
+
+
+def test_slots_narrower_than_one_nozzle_line_are_found_and_warned_about(profiles_dir, tmp_path):
+    from conftest import _stl, box_triangles
+
+    def two_blocks(name, gap):
+        far = [tuple((x, y + 3 + gap, z) for x, y, z in tri) for tri in box_triangles(20, 3, 5)]
+        return _stl(tmp_path / name, box_triangles(20, 3, 5) + far)
+
+    tight = model.analyse(two_blocks("tight.stl", 0.3))
+    assert tight["narrow_gaps"] == [{"part": "tight", "width_mm": 0.3, "area_mm2": 100.0}] and tight["fine_detail"] == []
+    assert model.analyse(two_blocks("open.stl", 2))["narrow_gaps"] == []
+    assert model.analyse(tmp_path / "tight.stl", nozzle=0.25)["narrow_gaps"] == []
+    plan = recommend.recommend(profiles_dir, "PLA", analysis=tight)
+    assert any("'tight' has gaps about 0.3 mm wide" in w and "close up" in w for w in plan["warnings"])
+    assert "wall_generator" not in plan["process_overrides"]
