@@ -239,3 +239,32 @@ def test_every_material_resolves_against_real_profiles(real_profiles):
             assert set(unknown) <= {"wall_sequence", "precise_outer_wall"}, unknown
             _, unknown = profiles.apply_overrides(filament, plan["filament_overrides"])
             assert unknown == [], unknown
+
+
+def test_walls_thinner_than_two_nozzle_lines_are_found_and_warned_about(profiles_dir, tmp_path):
+    from conftest import _stl, box_triangles
+    fin = model.analyse(_stl(tmp_path / "fin.stl", box_triangles(20, 0.6, 5)))
+    assert fin["fine_detail"] == [{"part": "fin", "thickness_mm": 0.6, "area_mm2": 200.0, "on_first_layer": True}]
+    assert model.analyse(_stl(tmp_path / "block.stl", box_triangles(20, 3, 5)))["fine_detail"] == []
+    # The same fin is fine for a 0.25 mm nozzle, whose two lines are 0.5 mm.
+    assert model.analyse(tmp_path / "fin.stl", nozzle=0.25)["fine_detail"] == []
+    plan = recommend.recommend(profiles_dir, "PLA", analysis=fin)
+    assert any("'fin' has detail about 0.6 mm wide" in w and "smudged" in w for w in plan["warnings"])
+    assert plan["process_overrides"]["wall_generator"] == "arachne"
+    assert plan["process_overrides"]["initial_layer_speed"] == "20"
+    block = recommend.recommend(profiles_dir, "PLA", analysis=model.analyse(tmp_path / "block.stl"))
+    assert "wall_generator" not in block["process_overrides"] and not any("detail" in w for w in block["warnings"])
+
+
+def test_smooth_finish_thins_the_layers_irons_the_top_and_says_what_it_cannot_fix(profiles_dir):
+    plain = recommend.recommend(profiles_dir, "PLA")
+    smooth = recommend.recommend(profiles_dir, "PLA", finish="smooth")
+    assert smooth["layer_height_mm"] < plain["layer_height_mm"]
+    assert smooth["process_overrides"]["ironing_type"] == "top" and "ironing_type" not in plain["process_overrides"]
+    assert any("textured plate" in w for w in smooth["warnings"])
+    assert not any("Ironing has not been tried" in w for w in smooth["warnings"])
+    assert any("Ironing has not been tried with PETG" in w for w in recommend.recommend(profiles_dir, "PETG", finish="smooth")["warnings"])
+    # A quality already finer than fine is kept.
+    assert recommend.recommend(profiles_dir, "PLA", quality="best", finish="smooth")["layer_height_mm"] <= smooth["layer_height_mm"]
+    with pytest.raises(recommend.RecommendError):
+        recommend.recommend(profiles_dir, "PLA", finish="glossy")

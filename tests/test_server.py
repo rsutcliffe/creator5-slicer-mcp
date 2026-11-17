@@ -291,7 +291,8 @@ def test_tools_over_real_stdio_transport(fake_env, cube_stl):
 
     names, payload = asyncio.run(run())
     assert names == {"check_setup", "list_filaments", "analyse_model", "recommend_settings", "slice_model",
-                     "open_in_slicer", "save_spool", "record_print_result", "compare_with_saved_project"}
+                     "open_in_slicer", "save_spool", "record_print_result", "compare_with_saved_project",
+                     "check_flash_studio_slice"}
     assert payload["ok"] and payload["summary"]["print_time"] == "1h 23m"
 
 
@@ -402,3 +403,60 @@ def test_pause_before_a_height_is_written_and_found_in_the_gcode(fake_env, cube_
     assert 'top_z="3"' in xml and 'type="1"' in xml and 'gcode="M25"' in xml and '<mode value="SingleExtruder"/>' in xml
     plain = server.slice_model(str(cube_stl), "PLA")
     assert plain["pauses_at_z"] == [] and "Metadata/custom_gcode_per_layer.xml" not in zipfile.ZipFile(plain["project_3mf"]).namelist()
+
+
+def test_the_print_log_is_read_back_when_recommending(fake_env, cube_stl):
+    first = server.slice_model(str(cube_stl), "PETG")
+    assert first["ok"] and first["plan"]["earlier_prints"] == []
+    server.record_print_result(first["project_3mf"], "acceptable", "Lettering smudged and the surfaces feel rough.")
+    again = server.recommend_settings("PETG", str(cube_stl))["plan"]
+    assert [p["outcome"] for p in again["earlier_prints"]] == ["acceptable"] and again["earlier_prints"][0]["same_model"]
+    assert any("this model" in w and "rated acceptable: Lettering smudged" in w for w in again["warnings"])
+    # Another model in the same filament still hears about it; another filament does not.
+    assert any("this filament preset" in w for w in server.recommend_settings("PETG")["plan"]["warnings"])
+    assert server.recommend_settings("PLA")["plan"]["earlier_prints"] == []
+    server.record_print_result(first["project_3mf"], "good", "Clean.")
+    latest = server.recommend_settings("PETG", str(cube_stl))["plan"]
+    assert not any("rated" in w for w in latest["warnings"]) and any("rated good" in r for r in latest["rationale"])
+
+
+def test_flash_studios_own_slice_is_found_by_its_origin_and_compared_with_the_project(fake_env, cube_stl, tmp_path):
+    import shutil
+    import zipfile
+    from creator5_mcp import slicer
+    result = server.slice_model(str(cube_stl), "PETG", nozzle_temp=250)
+    project = Path(result["project_3mf"])
+    root = tmp_path / "recovery"
+    assert slicer.studio_gcode(project, [root]) is None
+    for name, origin in (("other", tmp_path / "another.3mf"), ("mine", project)):
+        session = root / f"20261117T1#{name}"
+        (session / "Metadata").mkdir(parents=True)
+        (session / "origin.txt").write_text(str(origin))
+        shutil.copy(result["gcode"], session / "Metadata" / ".1.0.gcode")
+    found = slicer.studio_gcode(project, [root])
+    assert found == root / "20261117T1#mine" / "Metadata" / ".1.0.gcode"
+    with zipfile.ZipFile(project) as archive:
+        asked = json.loads(archive.read("Metadata/project_settings.config"))
+    report = slicer.studio_report(found, asked)
+    assert report["differs_from_project"] == [] and report["toolheads"][0]["nozzle_c"] == 250
+    # Flash Studio swapping the filament shows up as a difference.
+    found.write_text(found.read_text().replace("; nozzle_temperature = 250", "; nozzle_temperature = 235"))
+    swapped = slicer.studio_report(found, asked)
+    assert swapped["toolheads"][0]["nozzle_c"] == 235
+    assert swapped["differs_from_project"] == ["nozzle_temperature: project has 250, Flash Studio sliced 235"]
+
+
+def test_setup_reports_a_flash_studio_release_other_than_the_one_tested(fake_env, tmp_path, monkeypatch):
+    import plistlib
+    from creator5_mcp import slicer
+    assert "warning" not in server.check_setup()          # not an app bundle: nothing to compare
+    app = tmp_path / "Flash Studio.app" / "Contents"
+    (app / "MacOS").mkdir(parents=True)
+    (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleShortVersionString": "9.9"}))
+    binary = app / "MacOS" / "Flash Studio"
+    binary.write_bytes(Path(os.environ["ORCA_SLICER_PATH"]).read_bytes())
+    binary.chmod(0o755)
+    monkeypatch.setenv("ORCA_SLICER_PATH", str(binary))
+    report = server.check_setup()
+    assert report["flash_studio_version"] == "9.9" and report["tested_with"] == slicer.TESTED_FLASH_STUDIO
+    assert "Flash Studio is now 9.9" in report["warning"]

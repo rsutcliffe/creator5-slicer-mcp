@@ -127,3 +127,25 @@ def test_pause_lands_once_at_the_start_of_the_layer_asked_for(real_env, labelled
         elif line == "T1":
             used.add(layer)
     assert used and max(used) <= 3, used
+
+
+def test_smooth_finish_irons_the_top_in_the_real_gcode(real_env):
+    from conftest import _stl
+    from creator5_mcp import server
+    result = server.slice_model(str(_stl(real_env / "plate.stl", box_triangles(40, 30, 3))), "PLA", finish="smooth")
+    assert result["ok"] and result["settings_mismatched"] == [], result
+    gcode = Path(result["gcode"]).read_text(errors="ignore")
+    assert "; ironing_type = top" in gcode and ";TYPE:Ironing" in gcode
+    assert result["plan"]["layer_height_mm"] == 0.12 and "; layer_height = 0.12" in gcode
+
+
+def test_fine_detail_is_printed_with_variable_width_walls(real_env):
+    from conftest import _stl
+    from creator5_mcp import server
+    result = server.slice_model(str(_stl(real_env / "fin.stl", box_triangles(30, 0.6, 4))), "PLA")
+    assert result["ok"] and result["settings_mismatched"] == [], result
+    assert result["model"]["fine_detail"][0]["thickness_mm"] == 0.6
+    assert any("'fin' has detail about 0.6 mm wide" in w for w in result["plan"]["warnings"])
+    gcode = Path(result["gcode"]).read_text(errors="ignore")
+    assert "; wall_generator = arachne" in gcode and "; initial_layer_speed = 20" in gcode
+    assert result["summary"]["filament_used_g"] > 0          # the 0.6 mm fin does print, as one line

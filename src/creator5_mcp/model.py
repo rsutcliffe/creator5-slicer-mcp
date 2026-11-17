@@ -320,6 +320,52 @@ def load_mesh(path: Path) -> tuple[np.ndarray, list[str]]:
     return np.concatenate([part["tris"] for obj in loaded["objects"] for part in obj["parts"]]), loaded["notes"]
 
 
+def thin_walls(tris: np.ndarray, limit: float, pairs: int = 40_000_000) -> dict:
+    """How much of one part's upright wall is thinner than limit (mm), measured through the part.
+
+    From a sample of upright faces a ray runs straight into the part; where it comes out is the
+    wall's thickness there. Returns the wall area thinner than limit and the typical thickness of it.
+    """
+    cross = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+    twice = np.linalg.norm(cross, axis=1)
+    upright = np.flatnonzero((twice > 1e-9) & (np.abs(cross[:, 2]) < 0.3 * twice))
+    if not len(upright):
+        return {"area_mm2": 0.0, "thickness_mm": None, "lowest_z": None}
+    # shortcut: at most pairs ray-triangle tests, so a dense mesh is sampled evenly, not measured
+    # in full; a patch of thin wall smaller than one sample step can be missed. Raise pairs to check more.
+    step = max(1, math.ceil(len(upright) * len(tris) / pairs))
+    picked = upright[::step]
+    lo, hi = tris.min(axis=1), tris.max(axis=1)
+    v0, e1, e2 = tris[:, 0], tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]
+    thin_area, found, lowest = 0.0, [], None
+    for i in picked:
+        way = -cross[i] / twice[i]
+        start = tris[i].mean(axis=0)
+        end = start + way * limit
+        near = np.flatnonzero(np.all(hi >= np.minimum(start, end) - 1e-6, axis=1) & np.all(lo <= np.maximum(start, end) + 1e-6, axis=1))
+        near = near[near != i]
+        if not len(near):
+            continue
+        # Moller-Trumbore, one ray against the triangles near it
+        p = np.cross(way, e2[near])
+        det = np.einsum("ij,ij->i", e1[near], p)
+        ok = np.abs(det) > 1e-12
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+        t = start - v0[near]
+        u = np.einsum("ij,ij->i", t, p) * inv
+        q = np.cross(t, e1[near])
+        v = (q @ way) * inv
+        d = np.einsum("ij,ij->i", e2[near], q) * inv
+        hit = ok & (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9) & (d > 1e-3) & (d < limit - 1e-6)
+        if hit.any():
+            found.append(float(d[hit].min()))
+            thin_area += float(twice[i]) / 2 * step
+            foot = float(tris[i][:, 2].min())
+            lowest = foot if lowest is None else min(lowest, foot)
+    return {"area_mm2": round(thin_area, 1), "thickness_mm": round(float(np.median(found)), 2) if found else None,
+            "lowest_z": lowest}
+
+
 def designer_settings(path: Path) -> dict:
     """Shape-dependent settings saved in a 3MF by the slicer it was designed in, if any."""
     if path.suffix.lower() != ".3mf":
@@ -339,11 +385,15 @@ def designer_settings(path: Path) -> dict:
     return out
 
 
-def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE) -> dict:
+THIN_WALL_MM2 = 5.0   # wall area thinner than two nozzle widths before it is worth a warning
+
+
+def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE, nozzle: float = 0.4) -> dict:
     """Return size, volume and printability hints for a model file.
 
     support_angle is the slicer's support_threshold_angle: a downward face flatter
     than this, measured from the horizontal, needs support.
+    nozzle is the nozzle diameter in mm; detail thinner than two of its lines is reported as fine_detail.
     """
     if not path.is_file():
         raise ModelError(f"Model not found: {path}")
@@ -367,6 +417,13 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE) -> dict:
     overhang_area = float(area[overhang].sum())
     total_area = float(area.sum())
     footprint_min = float(min(size[0], size[1]))
+    fine = []
+    for obj in loaded["objects"]:
+        for part in obj["parts"]:
+            thin = thin_walls(part["tris"], 2 * nozzle)
+            if thin["area_mm2"] >= THIN_WALL_MM2:
+                fine.append({"part": part["name"], "thickness_mm": thin["thickness_mm"], "area_mm2": thin["area_mm2"],
+                             "on_first_layer": thin["lowest_z"] - float(lo[2]) < 0.3})
     return {
         "file": str(path),
         "analysed": True,
@@ -384,5 +441,6 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE) -> dict:
         "parts": sum(len(obj["parts"]) for obj in loaded["objects"]),
         "filaments_needed": filaments_needed(loaded),
         "colours": loaded["colours"],
+        "fine_detail": fine,
         "notes": notes,
     }

@@ -64,6 +64,16 @@ Supports go on by area, not by share of the surface. The PS5 holder has 112 mm²
 
 `supports` and `brim` accept `auto`, `on` or `off`. An explicit `on` or `off` beats both the designer's file and the shape check.
 
+## Fine detail
+
+Each part's upright walls are measured through the part. Where 5 mm² or more of wall is thinner than two nozzle widths (0.8 mm on the 0.4 mm nozzle), the plan:
+
+- warns, naming the part and the thickness found;
+- sets `wall_generator = arachne`, so a thin stroke gets one line of the right width;
+- when that detail sits on the bed, slows the first layer to 20 mm/s and its infill to 30 mm/s.
+
+Evidence: the key tag wordmark, strokes of 0.6 to 0.8 mm. With classic walls it blurred; with Arachne and the slow first layer it read cleanly but stayed short of a professional finish (eight tags, 16 and 17 Nov 2026). On that model the measure finds 0.63 mm in the logo and 0.47 mm in the body, the slivers of white inside the letters.
+
 ## Evidence from prints
 
 Results are logged in `print_results.json` in the output folder. Each row here is a real print.
@@ -137,6 +147,7 @@ The black Ender PLA spool has `max_flow` 6.7 mm³/s, proven by the good print of
 |---|---|
 | `precise_fit` | inner wall first, precise outer wall on, for parts that mate with other parts |
 | `smooth_top` | irons top surfaces |
+| `finish=smooth` | at least `fine` layers (0.12 mm on the 0.4 mm nozzle) and ironed tops. Warns that the underside copies the plate, and that ironing is untried on anything but PLA. Checked in the real G-code (`;TYPE:Ironing` present); not yet judged on a print |
 | `layer_height` | picks the preset nearest to an exact layer height |
 | `process_overrides` | any OrcaSlicer process key, applied last |
 | `filament_overrides` | any OrcaSlicer filament key, applied last |

@@ -79,7 +79,7 @@ python3 -m venv .venv
 
 | Tool | What it does |
 |---|---|
-| `check_setup` | Confirms the slicer and the Creator 5 presets are in place, and reports the server's version, the git commit it started from, and whether the code has changed since (`restart_needed`) |
+| `check_setup` | Confirms the slicer and the Creator 5 presets are in place, and reports the server's version, the git commit it started from, whether the code has changed since (`restart_needed`), and Flash Studio's release against the one last tested |
 | `list_filaments` | Lists the filament types understood, the presets installed and the saved spools |
 | `save_spool` | Remembers a spool and its label figures under a name |
 | `record_print_result` | Records how a print came out, with its settings and anything changed by hand |
@@ -88,6 +88,7 @@ python3 -m venv .venv
 | `recommend_settings` | Returns the chosen presets and settings with reasons, without slicing |
 | `slice_model` | Analyses, chooses settings, writes the project, slices it, and confirms each setting reached the G-code |
 | `open_in_slicer` | Opens the project in a new Flash Studio window, ready for Slice and Print |
+| `check_flash_studio_slice` | After you press Slice plate in Flash Studio: reads what its window sliced (each toolhead's preset and temperature, the bed, pauses, time) and lists anything that differs from the project |
 
 ### The main inputs
 
@@ -97,6 +98,7 @@ python3 -m venv .venv
 - **strength**: `decorative`, `standard`, `functional` or `structural`
 - **nozzle**: `0.25`, `0.4`, `0.6` or `0.8`
 - **supports**, **brim**: `auto`, `on` or `off`
+- **finish**: `standard` or `smooth`. Smooth uses at least fine layers and irons flat tops
 - **nozzle_temp**, **bed_temp**, **max_speed**: figures from the spool's label, for filament from other makers
 
 Anything else in OrcaSlicer is reachable through `process_overrides` and `filament_overrides`.
@@ -176,6 +178,9 @@ This server never sends anything to the printer. Flash Studio's own Print button
 - `auto_orient` works on single-part models only. Turning a model of several parts would merge them.
 - Every toolhead shares one process. Where two materials want different process settings, the slower speed wins.
 - Every toolhead shares one bed. The slicer heats it to the highest temperature any filament asks for; when filaments differ by 10 C or more, a warning says which toolhead that is too hot for.
+- Detail thinner than two nozzle lines (0.8 mm on the 0.4 mm nozzle) prints soft. The server measures it and warns, and switches to variable-width walls, but it cannot make a 0.4 mm nozzle draw a 0.6 mm letter stroke cleanly.
+- No setting smooths the underside: it copies the build plate.
+- The fine detail measure samples dense meshes and looks at walls only, not at narrow gaps.
 - The recommended values are reasoned starting points, not measured optima. See [docs/SETTINGS.md](docs/SETTINGS.md).
 
 ## Development

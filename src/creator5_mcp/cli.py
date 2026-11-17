@@ -34,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-speed", type=int, default=0)
     parser.add_argument("--auto-orient", action="store_true")
     parser.add_argument("--smooth-top", action="store_true", help="iron flat top surfaces for a smoother finish")
+    parser.add_argument("--finish", default="standard", choices=list(recommend.FINISH),
+                        help="smooth: at least fine layers and ironed tops, for the smoothest surfaces")
     parser.add_argument("--precise-fit", action="store_true", help="tighter outer dimensions for mating parts")
     parser.add_argument("--pause-before-z", type=float, default=0, metavar="MM",
                         help="pause before the layer whose top is at this height, to embed something")
@@ -66,7 +68,8 @@ def main(argv: list[str] | None = None) -> int:
         args.supports, args.brim, copies=args.copies, auto_orient=args.auto_orient,
         smooth_top=args.smooth_top, precise_fit=args.precise_fit,
         nozzle_temp=args.nozzle_temp, bed_temp=args.bed_temp, max_speed=args.max_speed,
-        other_filaments=[_words(f) for f in args.also] or None, pause_before_z=args.pause_before_z)
+        other_filaments=[_words(f) for f in args.also] or None, pause_before_z=args.pause_before_z,
+        finish=args.finish)
     if not result["ok"]:
         print("FAILED: " + result["error"])
         return 1
@@ -75,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     for i, slot in enumerate(plan["filaments"]):
         print(f"  Toolhead {i + 1} {slot['material']}  ({slot['preset']})  {slot['colour']}")
     print(f"  Process    {plan['process_preset']}")
-    for key in ("wall_loops", "sparse_infill_density", "sparse_infill_pattern", "enable_support", "brim_type", "ironing_type"):
+    for key in ("wall_loops", "sparse_infill_density", "sparse_infill_pattern", "enable_support", "brim_type", "ironing_type", "wall_generator"):
         if key in plan["process_overrides"]:
             print(f"  {key:<22} {plan['process_overrides'][key]}")
     for key, value in plan["filament_overrides"].items():

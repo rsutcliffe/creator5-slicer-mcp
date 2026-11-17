@@ -106,6 +106,10 @@ Each of these cost a round trip through the owner. Do not relearn them.
 5. **Speed is best limited through `filament_max_volumetric_speed`**, not individual speed settings. It covers every move.
 6. **Curly quotes.** Two commands failed because the chat app changed `"` to typographic quotes. The terminal command takes hyphenated words (`--filament ender-pla`) for this reason.
 
+34. **Why a changed filament on toolheads 2 to 4 is swapped: part found, not fixed (17 Nov 2026).** Flash Studio's log (`~/Library/Application Support/Orca-Flashforge/log/debug_*.log.0`) said of the embedded preset: `validate_preset: preset_name Flashforge HS PETG @FF C5 (toolhead 2), no inherit, set to not found`. `PresetBundle::validate_presets` needs `inherits_group[toolhead + 1]` to name the stock preset; the project left it empty. Two patched copies of the six-tag project were opened in 1.7.22: one with `inherits_group` filled, one with the changed keys also listed in `different_settings_to_system`. Both passed validation and both still showed `Generic HS PETG` on toolhead 2. So a later step swaps it, and that step is not in the public source: `FlashForge/Orca-Flashforge` stops at 1.7.15 and has no Creator 5 presets. The nearest-stock-preset rule in item 28 stays. Read the log before any further attempt; it names each decision.
+35. **Fine detail is measured and warned about.** `model.thin_walls` casts rays through each part's upright walls. On the key tag it finds 0.63 mm in the logo and 0.47 mm in the body. See `docs/SETTINGS.md`.
+36. **`check_flash_studio_slice` reads Flash Studio's own G-code** by matching `origin.txt` in the window's session folder to the project path. The folder goes when the window closes.
+
 ## 4. Lessons on approach
 
 From this session and from the article the owner shared (How-To Geek, "This is what AI coding actually excels at", 2026), in which Codex got a Creator 5 Pro working with Orca Slicer and Home Assistant in a few tries:

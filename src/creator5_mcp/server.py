@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import platform
 import re
 import subprocess
 import time
+import zipfile
 from pathlib import Path
 
 try:  # mcp 2.x
@@ -28,7 +30,9 @@ mcp = FastMCP(
         "warnings to the user. If the user gives figures from the spool's label, pass them as "
         "nozzle_temp, bed_temp and max_speed, and offer to keep them with save_spool so the spool's name is "
         "enough next time. For a multi-colour model, pass the filaments in toolheads 2 to 4 as other_filaments. "
-        "Use recommend_settings first when the user wants to review choices. When the user says how a print "
+        "Use recommend_settings first when the user wants to review choices. For a job with more than one filament, "
+        "after the user presses Slice plate in Flash Studio, call check_flash_studio_slice to confirm each toolhead's "
+        "temperatures. Pass finish=smooth when the user wants a smooth or professional surface. When the user says how a print "
         "came out, call record_print_result. The user prints from Flash Studio; "
         "this server never sends anything to the printer."
     ),
@@ -86,6 +90,12 @@ def check_setup() -> dict:
     }
     if settings.slicer_path:
         report["slicer_version"] = slicer.version(settings)
+        release = slicer.app_version(settings)
+        report["flash_studio_version"], report["tested_with"] = release, slicer.TESTED_FLASH_STUDIO
+        if release and release != slicer.TESTED_FLASH_STUDIO:
+            report["warning"] = (f"Flash Studio is now {release}; this server was last tested with {slicer.TESTED_FLASH_STUDIO}. "
+                                 "An update can change defaults and folders. Run the tests (pytest and scripts/smoke_test.py) "
+                                 "before trusting a slice, then set TESTED_FLASH_STUDIO in slicer.py.")
     else:
         report["fix"] = "Install OrcaSlicer or Flash Studio, or set ORCA_SLICER_PATH."
     if settings.slicer_path and not settings.profiles_dir:
@@ -219,7 +229,8 @@ def _spool(settings, text: str, nozzle_temp: int = 0, bed_temp: int = 0, max_spe
 def _plan(model_path: str | None, filament: str, quality: str, strength: str, nozzle: str, supports: str,
           brim: str, layer_height: float | None, precise_fit: bool, smooth_top: bool, pro: bool,
           nozzle_temp: int = 0, bed_temp: int = 0, max_speed: int = 0,
-          shape_path: Path | None = None, other_filaments: list[str] | None = None) -> tuple[dict, dict | None]:
+          shape_path: Path | None = None, other_filaments: list[str] | None = None,
+          finish: str = "standard") -> tuple[dict, dict | None]:
     """shape_path: the file whose shape will print, when it differs from model_path (an oriented or converted copy).
 
     The plan's "filaments" lists one {"preset", "overrides", "colour", "material"} per toolhead used.
@@ -231,7 +242,7 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
         path = _path(model_path)
         designer = model.designer_settings(path)
         angle = float(designer.get("support_threshold_angle") or 0) or model.DEFAULT_SUPPORT_ANGLE
-        analysis = model.analyse(shape_path or path, angle)
+        analysis = model.analyse(shape_path or path, angle, float(nozzle))
     shape = analysis if analysis and analysis.get("analysed") else {}
     said = [filament, *(other_filaments or [])]
     limit = len(profiles.flatten(profiles_dir, "machine", profiles.machine_name(nozzle, pro)).get("nozzle_diameter") or [1])
@@ -243,7 +254,7 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
     plan = recommend.recommend(
         profiles_dir, first["filament"], quality, strength, nozzle, analysis, supports, brim,
         layer_height or None, precise_fit, smooth_top, pro, first["nozzle_temp"] or None, first["bed_temp"] or None,
-        first["max_speed"] or None, designer, toolheads, first["max_flow"] or None)
+        first["max_speed"] or None, designer, toolheads, first["max_flow"] or None, finish)
     file_colours = shape.get("colours", []) if toolheads > 1 else []
     slots, unnamed = [], []
     for i in range(toolheads):
@@ -289,6 +300,7 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
             unnamed.append(f"toolhead {i + 1} ({colour})")
         slots.append({"preset": preset, "overrides": overrides, "colour": colour, "material": material})
     plan["filaments"] = slots
+    _earlier_prints(settings, plan, shape.get("objects", []))
     if toolheads > 1:
         plan["rationale"].append("Toolheads: " + "; ".join(f"{i + 1} = {slot['material']} {slot['colour']}" for i, slot in enumerate(slots)) + ".")
     if unnamed:
@@ -296,6 +308,28 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
                                 f"The rest were given toolhead 1's filament, in the model's colours: {', '.join(unnamed)}. "
                                 "Load those colours, or name each filament.")
     return plan, analysis
+
+
+def _earlier_prints(settings, plan: dict, objects: list[str]) -> None:
+    """Add what the print log says about this filament preset or this model to the plan."""
+    presets = {slot["preset"] for slot in plan["filaments"]}
+    seen = []
+    for entry in reversed(results.load(settings.output_dir)):
+        used = entry.get("filament_presets") or []
+        used = {re.sub(r" \(toolhead \d\)$", "", name) for name in ([used] if isinstance(used, str) else used)}
+        same_model = bool(set(entry.get("objects") or []) & set(objects))
+        if same_model or used & presets:
+            seen.append({"date": entry.get("date"), "outcome": entry.get("outcome"), "same_model": same_model,
+                         "objects": entry.get("objects"), "process_preset": entry.get("process_preset"),
+                         "notes": entry.get("notes", "")})
+    plan["earlier_prints"] = seen[:3]
+    if seen and seen[0]["outcome"] != "good":
+        what = "this model" if seen[0]["same_model"] else "this filament preset"
+        plan["warnings"].append(f"The last recorded print with {what} ({seen[0]['date']}) was rated {seen[0]['outcome']}: "
+                                f"{seen[0]['notes'][:300]}")
+    elif seen:
+        what = "this model" if seen[0]["same_model"] else "this filament preset"
+        plan["rationale"].append(f"The last recorded print with {what} ({seen[0]['date']}) was rated good.")
 
 
 @mcp.tool()
@@ -315,6 +349,7 @@ def recommend_settings(
     bed_temp: int = 0,
     max_speed: int = 0,
     other_filaments: list[str] | None = None,
+    finish: str = "standard",
 ) -> dict:
     """Choose presets and settings for a print without slicing, with the reasoning for each choice.
 
@@ -336,11 +371,13 @@ def recommend_settings(
         bed_temp: Bed temperature in C from the spool's label, or 0 to use the preset.
         max_speed: Fastest print speed in mm/s the spool's label recommends, or 0 for no extra limit.
         other_filaments: Filaments in toolheads 2, 3 and 4, in order, for a multi-colour model.
+        finish: standard or smooth. Smooth uses at least fine layers and irons flat tops, for the smoothest
+            surfaces the printer gives. Use it when the user asks for a smooth or professional finish.
     """
     try:
         plan, analysis = _plan(model_path, filament, quality, strength, nozzle, supports, brim,
                                layer_height, precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed,
-                               other_filaments=other_filaments)
+                               other_filaments=other_filaments, finish=finish)
         return {"ok": True, "plan": plan, "model": analysis}
     except _ERRORS as exc:
         return _fail(exc)
@@ -369,6 +406,7 @@ def slice_model(
     max_speed: int = 0,
     other_filaments: list[str] | None = None,
     pause_before_z: float = 0,
+    finish: str = "standard",
 ) -> dict:
     """Slice a model for the Creator 5 with settings chosen for the filament and purpose.
 
@@ -403,6 +441,8 @@ def slice_model(
         other_filaments: Filaments in toolheads 2, 3 and 4, in order, for a multi-colour model.
         pause_before_z: Pause the print before the layer whose top is at this height in mm, to embed a magnet,
             nut or NFC tag. 0 for no pause. The layer below it is the last one printed before the pause.
+        finish: standard or smooth. Smooth uses at least fine layers and irons flat tops, for the smoothest
+            surfaces the printer gives. Use it when the user asks for a smooth or professional finish.
     """
     try:
         settings = load_settings()
@@ -440,7 +480,7 @@ def slice_model(
             notes.append("The slicer chose the orientation; the project and the G-code both use it.")
         plan, analysis = _plan(str(source), filament, quality, strength, nozzle, supports, brim, layer_height,
                                precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed, shape_path=shaped,
-                               other_filaments=other_filaments)
+                               other_filaments=other_filaments, finish=finish)
         made = project.write_project(profiles_dir, shaped, plan, job_dir / f"{name}.3mf", copies,
                                      process_overrides, filament_overrides, pause_before_z=pause_before_z)
         result = slicer.slice_project(settings, Path(made["project"]), job_dir)
@@ -487,6 +527,31 @@ def slice_model(
                 "settings_checked_in_gcode": len(expected) - len(mismatched), "settings_mismatched": mismatched,
                 "plan": plan, "model": analysis}
     except _ERRORS as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def check_flash_studio_slice(project_3mf: str) -> dict:
+    """Read what Flash Studio's own window sliced for a project, after the user pressed Slice plate there.
+
+    This is the proof of what will print: the nozzle temperature and preset of each toolhead, the bed
+    temperature, pauses, time and filament, and every changed setting that differs from the project.
+    Use it for multi-filament jobs, where Flash Studio may swap the filament in toolheads 2 to 4.
+    The window must still be open; nothing is sent to the printer.
+
+    Args:
+        project_3mf: The project_3mf path slice_model returned, as opened in Flash Studio.
+    """
+    try:
+        target = _path(project_3mf)
+        gcode = slicer.studio_gcode(target)
+        if gcode is None:
+            return {"ok": False, "error": "Flash Studio has not sliced this project yet, or its window was closed. "
+                                          "Open the project, press Slice plate, leave the window open, then ask again."}
+        with zipfile.ZipFile(target) as archive:
+            asked = json.loads(archive.read("Metadata/project_settings.config"))
+        return {"ok": True, **slicer.studio_report(gcode, asked)}
+    except _ERRORS + (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
         return _fail(exc)
 
 
