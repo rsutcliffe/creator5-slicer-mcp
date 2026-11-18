@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import math
 import re
 import struct
+import subprocess
+import sys
+import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -13,7 +17,8 @@ from pathlib import Path
 import numpy as np
 
 BED_X = BED_Y = BED_Z = 256.0  # Creator 5 build volume in mm, from the Orca machine preset
-MESH_SUFFIXES = (".stl", ".obj", ".3mf")
+CAD_SUFFIXES = (".step", ".stp")
+MESH_SUFFIXES = (".stl", ".obj", ".3mf", *CAD_SUFFIXES)
 DEFAULT_SUPPORT_ANGLE = 30.0   # support_threshold_angle in every Creator 5 process preset
 
 _CORE = "{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}"
@@ -202,15 +207,72 @@ def _load_3mf(path: Path) -> dict:
             if item.get("printable", "1") == "0" or (plate_objects is not None and oid not in plate_objects):
                 continue
             m = _matrix(item.get("transform"))
+            top = next((o for o in root.iter(_CORE + "object") if o.get("id") == oid), None)
+            # Some CAD exports say which toolhead and what the part is only in a part number, e.g. "Logo_Black_Extruder2".
+            label = item.get("partnumber") or (top.get("partnumber") if top is not None else "") or ""
+            hint = re.search(r"extruder\D?(\d)", label, re.I)
             parts = [{**part, "tris": _apply(part["tris"], m) * scale}
-                     for part in parts_of(root_name, oid, oid, cfg_extruder.get((oid, None)))]
+                     for part in parts_of(root_name, oid, oid, cfg_extruder.get((oid, None)) or (int(hint.group(1)) if hint else None))]
             if parts:
-                top = next((o for o in root.iter(_CORE + "object") if o.get("id") == oid), None)
                 name = clean_name(cfg_name.get((oid, None)) or (top.get("name") if top is not None else "") or "")
+                if label and (not name or re.fullmatch(r"geometry_\d+", name)):
+                    name = label.replace("_", " ")
+                    for part in parts:
+                        part["name"] = name if len(parts) == 1 else part["name"]
                 objects.append({"name": name or parts[0]["name"], "parts": parts})
+        if "Metadata/model_settings.config" not in names:
+            objects = _join_touching(objects, clean_name(path.stem))
     if not objects:
         raise ModelError(f"{path.name} holds no printable mesh")
     return {"objects": objects, "colours": colours, "filaments": filaments, "notes": notes}
+
+
+def convert_step(path: Path, out_dir: Path) -> Path:
+    """Mesh a STEP file into an OBJ in out_dir, in millimetres and the file's own orientation.
+
+    Neither Flash Studio's nor OrcaSlicer's command line reads STEP, so the optional `cascadio`
+    library (OpenCASCADE) does it. It runs in a separate process: the library prints to standard
+    output, which would corrupt the MCP connection if it ran inside the server.
+    """
+    if importlib.util.find_spec("cascadio") is None:
+        raise ModelError("STEP files need the optional converter. Install it with: pip install cascadio "
+                         "(or re-run scripts/setup.sh). Otherwise open the file in Flash Studio and export it as STL.")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{clean_name(path.stem)}.obj"
+    code = "import sys, cascadio; sys.exit(cascadio.step_to_obj(sys.argv[1], sys.argv[2], tol_linear=0.01, tol_angular=0.5, use_colors=False))"
+    try:
+        result = subprocess.run([sys.executable, "-c", code, str(path), str(out)], capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired as exc:
+        raise ModelError(f"Converting {path.name} took longer than 5 minutes and was stopped.") from exc
+    if result.returncode != 0 or not out.is_file() or not out.stat().st_size:
+        out.unlink(missing_ok=True)
+        if not any(out_dir.iterdir()):
+            out_dir.rmdir()      # do not leave an empty folder behind in the prints folder
+        detail = (result.stdout + result.stderr).strip().splitlines()
+        raise ModelError(f"{path.name} could not be read as a STEP file." + (f" {detail[-1].strip()}" if detail else ""))
+    return out
+
+
+def _join_touching(objects: list[dict], name: str) -> list[dict]:
+    """In a plain 3MF, build items whose boxes overlap are parts of one thing (a logo set into a
+    body), saved as separate items by a CAD tool. Joined into one object they cannot be moved apart
+    in the slicer. Items that sit apart, such as two figures on a plate, stay separate objects."""
+    boxes = [(np.concatenate([p["tris"].reshape(-1, 3) for p in o["parts"]]).min(axis=0),
+              np.concatenate([p["tris"].reshape(-1, 3) for p in o["parts"]]).max(axis=0)) for o in objects]
+    group = list(range(len(objects)))
+    for i in range(len(objects)):
+        for j in range(i):
+            if np.all(boxes[i][0] <= boxes[j][1]) and np.all(boxes[j][0] <= boxes[i][1]):
+                old, new = group[i], group[j]
+                group = [new if g == old else g for g in group]
+    out = []
+    for g in dict.fromkeys(group):
+        members = [o for o, k in zip(objects, group) if k == g]
+        if len(members) == 1:
+            out.append(members[0])
+        else:
+            out.append({"name": name, "parts": [part for o in members for part in o["parts"]]})
+    return out
 
 
 def load_objects(path: Path) -> dict:
@@ -230,11 +292,13 @@ def load_objects(path: Path) -> dict:
         return loaded
     if suffix == ".stl":
         tris = _load_stl(path)
+    elif suffix in CAD_SUFFIXES:
+        with tempfile.TemporaryDirectory(prefix="creator5_step_") as folder:
+            tris = _load_obj(convert_step(path, Path(folder)))
     elif suffix == ".obj":
         tris = _load_obj(path)
     else:
-        raise ModelError(f"{path.suffix} files cannot be read here: the slicer's command line takes STL, OBJ and 3MF only. "
-                         "Open the file in Flash Studio and export it as STL, or ask its designer for a 3MF.")
+        raise ModelError(f"{path.suffix} files cannot be read here. Use STL, OBJ, 3MF or STEP.")
     name = clean_name(path.stem)
     return {"objects": [{"name": name, "parts": [{"name": name, "tris": tris, "extruder": None, "paint": None}]}],
             "colours": [], "filaments": 0, "notes": []}
@@ -256,6 +320,54 @@ def load_mesh(path: Path) -> tuple[np.ndarray, list[str]]:
     return np.concatenate([part["tris"] for obj in loaded["objects"] for part in obj["parts"]]), loaded["notes"]
 
 
+def thin_walls(tris: np.ndarray, limit: float, pairs: int = 40_000_000, gaps: bool = False) -> dict:
+    """How much of one part's upright wall is thinner than limit (mm), measured through the part.
+
+    From a sample of upright faces a ray runs straight into the part; where it comes out is the
+    wall's thickness there. Returns the wall area thinner than limit and the typical thickness of it.
+    With gaps, the ray runs out of the part instead, and what it finds is the width of the slot
+    between that wall and the next one of the same part.
+    """
+    cross = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+    twice = np.linalg.norm(cross, axis=1)
+    upright = np.flatnonzero((twice > 1e-9) & (np.abs(cross[:, 2]) < 0.3 * twice))
+    if not len(upright):
+        return {"area_mm2": 0.0, "thickness_mm": None, "lowest_z": None}
+    # shortcut: at most pairs ray-triangle tests, so a dense mesh is sampled evenly, not measured
+    # in full; a patch of thin wall smaller than one sample step can be missed. Raise pairs to check more.
+    step = max(1, math.ceil(len(upright) * len(tris) / pairs))
+    picked = upright[::step]
+    lo, hi = tris.min(axis=1), tris.max(axis=1)
+    v0, e1, e2 = tris[:, 0], tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]
+    thin_area, found, lowest = 0.0, [], None
+    for i in picked:
+        way = cross[i] / twice[i] * (1 if gaps else -1)
+        start = tris[i].mean(axis=0)
+        end = start + way * limit
+        near = np.flatnonzero(np.all(hi >= np.minimum(start, end) - 1e-6, axis=1) & np.all(lo <= np.maximum(start, end) + 1e-6, axis=1))
+        near = near[near != i]
+        if not len(near):
+            continue
+        # Moller-Trumbore, one ray against the triangles near it
+        p = np.cross(way, e2[near])
+        det = np.einsum("ij,ij->i", e1[near], p)
+        ok = np.abs(det) > 1e-12
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+        t = start - v0[near]
+        u = np.einsum("ij,ij->i", t, p) * inv
+        q = np.cross(t, e1[near])
+        v = (q @ way) * inv
+        d = np.einsum("ij,ij->i", e2[near], q) * inv
+        hit = ok & (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9) & (d > 1e-3) & (d < limit - 1e-6)
+        if hit.any():
+            found.append(float(d[hit].min()))
+            thin_area += float(twice[i]) / 2 * step
+            foot = float(tris[i][:, 2].min())
+            lowest = foot if lowest is None else min(lowest, foot)
+    return {"area_mm2": round(thin_area, 1), "thickness_mm": round(float(np.median(found)), 2) if found else None,
+            "lowest_z": lowest}
+
+
 def designer_settings(path: Path) -> dict:
     """Shape-dependent settings saved in a 3MF by the slicer it was designed in, if any."""
     if path.suffix.lower() != ".3mf":
@@ -275,17 +387,22 @@ def designer_settings(path: Path) -> dict:
     return out
 
 
-def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE) -> dict:
+THIN_WALL_MM2 = 5.0   # wall area thinner than two nozzle widths, or facing a gap narrower than one, before it is worth a warning
+
+
+def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE, nozzle: float = 0.4) -> dict:
     """Return size, volume and printability hints for a model file.
 
     support_angle is the slicer's support_threshold_angle: a downward face flatter
     than this, measured from the horizontal, needs support.
+    nozzle is the nozzle diameter in mm; detail thinner than two of its lines is reported as fine_detail,
+    and slots narrower than one line as narrow_gaps.
     """
     if not path.is_file():
         raise ModelError(f"Model not found: {path}")
     if path.suffix.lower() not in MESH_SUFFIXES:
         return {"file": str(path), "analysed": False,
-                "note": "Shape analysis covers STL, OBJ and 3MF."}
+                "note": "Shape analysis covers STL, OBJ, 3MF and STEP."}
     loaded = load_objects(path)
     tris, notes = np.concatenate([part["tris"] for obj in loaded["objects"] for part in obj["parts"]]), loaded["notes"]
     lo, hi = tris.reshape(-1, 3).min(axis=0), tris.reshape(-1, 3).max(axis=0)
@@ -303,6 +420,16 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE) -> dict:
     overhang_area = float(area[overhang].sum())
     total_area = float(area.sum())
     footprint_min = float(min(size[0], size[1]))
+    fine, slots = [], []
+    for obj in loaded["objects"]:
+        for part in obj["parts"]:
+            gap = thin_walls(part["tris"], nozzle, gaps=True)
+            if gap["area_mm2"] / 2 >= THIN_WALL_MM2:        # a slot has two walls, and both were counted
+                slots.append({"part": part["name"], "width_mm": gap["thickness_mm"], "area_mm2": round(gap["area_mm2"] / 2, 1)})
+            thin = thin_walls(part["tris"], 2 * nozzle)
+            if thin["area_mm2"] >= THIN_WALL_MM2:
+                fine.append({"part": part["name"], "thickness_mm": thin["thickness_mm"], "area_mm2": thin["area_mm2"],
+                             "on_first_layer": thin["lowest_z"] - float(lo[2]) < 0.3})
     return {
         "file": str(path),
         "analysed": True,
@@ -320,5 +447,7 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE) -> dict:
         "parts": sum(len(obj["parts"]) for obj in loaded["objects"]),
         "filaments_needed": filaments_needed(loaded),
         "colours": loaded["colours"],
+        "fine_detail": fine,
+        "narrow_gaps": slots,
         "notes": notes,
     }

@@ -18,7 +18,7 @@ if [ -d .git ]; then git pull --ff-only || echo "(could not update; continuing w
 
 step "Installing into .venv"
 if [ ! -x .venv/bin/python ]; then python3 -m venv .venv || exit 1; fi
-.venv/bin/python -m pip install --quiet -e . || exit 1
+.venv/bin/python -m pip install --quiet -e ".[step]" || exit 1
 echo "installed"
 
 step "Checking the slicer by slicing a small cube to a file (nothing is sent to the printer)"

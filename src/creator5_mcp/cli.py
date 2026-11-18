@@ -19,7 +19,7 @@ def _words(parts: list[str]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="creator5_mcp.cli", description="Slice a model for the Flashforge Creator 5.")
-    parser.add_argument("model", nargs="?", help="path to an STL, 3MF or OBJ file")
+    parser.add_argument("model", nargs="?", help="path to an STL, 3MF, OBJ or STEP file")
     parser.add_argument("--filament", nargs="+", default=["PLA"], help="toolhead 1: e.g. PLA, PETG, ender-pla, silk-pla, or a saved spool")
     parser.add_argument("--also", nargs="+", action="append", default=[], metavar="FILAMENT",
                         help="the filament in the next toolhead; repeat for toolheads 2, 3 and 4")
@@ -34,11 +34,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-speed", type=int, default=0)
     parser.add_argument("--auto-orient", action="store_true")
     parser.add_argument("--smooth-top", action="store_true", help="iron flat top surfaces for a smoother finish")
+    parser.add_argument("--finish", default="standard", choices=list(recommend.FINISH),
+                        help="smooth: at least fine layers and ironed tops, for the smoothest surfaces")
     parser.add_argument("--precise-fit", action="store_true", help="tighter outer dimensions for mating parts")
+    parser.add_argument("--pause-before-z", type=float, default=0, metavar="MM",
+                        help="pause before the layer whose top is at this height, to embed something")
     parser.add_argument("--open", action="store_true", help="open the project in the slicer when done")
     parser.add_argument("--save-spool", nargs="+", metavar="NAME",
                         help="remember a spool under this name, with --filament and the label figures, then exit")
     parser.add_argument("--colour", default="", help="with --save-spool: a colour word or hex value")
+    parser.add_argument("--max-flow", type=float, default=0, help="with --save-spool: a proven flow limit in mm3/s")
     parser.add_argument("--record-result", metavar="PROJECT", help="record how this project printed, then exit")
     parser.add_argument("--outcome", default="good", choices=["good", "acceptable", "failed"], help="with --record-result")
     parser.add_argument("--notes", nargs="+", default=[], help="with --record-result: what happened, in plain words")
@@ -48,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.save_spool:
         saved = server.save_spool(_words(args.save_spool), _words(args.filament), args.nozzle_temp, args.bed_temp,
-                                  args.max_speed, args.colour)
+                                  args.max_speed, args.colour, args.max_flow)
         print(f"Saved spool: {saved['spool']}" if saved["ok"] else "FAILED: " + saved["error"])
         return 0 if saved["ok"] else 1
     if args.record_result:
@@ -63,7 +68,8 @@ def main(argv: list[str] | None = None) -> int:
         args.supports, args.brim, copies=args.copies, auto_orient=args.auto_orient,
         smooth_top=args.smooth_top, precise_fit=args.precise_fit,
         nozzle_temp=args.nozzle_temp, bed_temp=args.bed_temp, max_speed=args.max_speed,
-        other_filaments=[_words(f) for f in args.also] or None)
+        other_filaments=[_words(f) for f in args.also] or None, pause_before_z=args.pause_before_z,
+        finish=args.finish)
     if not result["ok"]:
         print("FAILED: " + result["error"])
         return 1
@@ -72,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     for i, slot in enumerate(plan["filaments"]):
         print(f"  Toolhead {i + 1} {slot['material']}  ({slot['preset']})  {slot['colour']}")
     print(f"  Process    {plan['process_preset']}")
-    for key in ("wall_loops", "sparse_infill_density", "sparse_infill_pattern", "enable_support", "brim_type", "ironing_type"):
+    for key in ("wall_loops", "sparse_infill_density", "sparse_infill_pattern", "enable_support", "brim_type", "ironing_type", "wall_generator"):
         if key in plan["process_overrides"]:
             print(f"  {key:<22} {plan['process_overrides'][key]}")
     for key, value in plan["filament_overrides"].items():

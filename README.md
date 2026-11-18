@@ -79,15 +79,16 @@ python3 -m venv .venv
 
 | Tool | What it does |
 |---|---|
-| `check_setup` | Confirms the slicer and the Creator 5 presets are in place |
+| `check_setup` | Confirms the slicer and the Creator 5 presets are in place, and reports the server's version, the git commit it started from, whether the code has changed since (`restart_needed`), and Flash Studio's release against the one last tested |
 | `list_filaments` | Lists the filament types understood, the presets installed and the saved spools |
 | `save_spool` | Remembers a spool and its label figures under a name |
 | `record_print_result` | Records how a print came out, with its settings and anything changed by hand |
 | `compare_with_saved_project` | Shows what you changed in Flash Studio, against the project the server wrote |
-| `analyse_model` | Measures an STL, OBJ or 3MF: size, volume, bed contact, overhangs, parts, toolheads used, fit on the 256 mm bed |
+| `analyse_model` | Measures an STL, OBJ, 3MF or STEP: size, volume, bed contact, overhangs, parts, toolheads used, fit on the 256 mm bed |
 | `recommend_settings` | Returns the chosen presets and settings with reasons, without slicing |
 | `slice_model` | Analyses, chooses settings, writes the project, slices it, and confirms each setting reached the G-code |
 | `open_in_slicer` | Opens the project in a new Flash Studio window, ready for Slice and Print |
+| `check_flash_studio_slice` | After you press Slice plate in Flash Studio: reads what its window sliced (each toolhead's preset and temperature, the bed, pauses, time) and lists anything that differs from the project |
 
 ### The main inputs
 
@@ -97,6 +98,7 @@ python3 -m venv .venv
 - **strength**: `decorative`, `standard`, `functional` or `structural`
 - **nozzle**: `0.25`, `0.4`, `0.6` or `0.8`
 - **supports**, **brim**: `auto`, `on` or `off`
+- **finish**: `standard` or `smooth`. Smooth uses at least fine layers and irons flat tops
 - **nozzle_temp**, **bed_temp**, **max_speed**: figures from the spool's label, for filament from other makers
 
 Anything else in OrcaSlicer is reachable through `process_overrides` and `filament_overrides`.
@@ -127,6 +129,8 @@ Save a spool once with the figures from its label, and its name is enough afterw
 
 A request for `the black PLA` then uses that material, those temperatures, that speed limit and that colour. A figure given with a request beats the register. The register is `spools.json` in the output folder.
 
+Once a spool has printed well, or you have run a flow test, add `--max-flow` with the flow in mm³/s. That proven limit is then used at every layer height. Without it the cap is worked out from the label's top speed, which halves at half the layer height and makes fine prints slower than they need to be.
+
 ## Learning from prints
 
 When a print is done, say how it went. `record_print_result` keeps the outcome with the project's presets and changed settings in `print_results.json` in the output folder. If you edited the project in Flash Studio and saved it, pass that file too: what you changed by hand (supports switched on, a part cloned, the model swapped) is recorded alongside. Settings changes can then point at real prints.
@@ -135,9 +139,15 @@ When a print is done, say how it went. `record_print_result` keeps the outcome w
 .venv/bin/python -m creator5_mcp.cli --record-result PROJECT.3mf --outcome good --notes clean walls, supports came off easily
 ```
 
+## Pausing to embed something
+
+`pause_before_z` (or `--pause-before-z`) pauses the print before the layer whose top is at that height, using the printer's own pause command, so a magnet, nut or NFC tag can go into a pocket. The server confirms the pause in the G-code and reports it as `pauses_at_z`. Pick a height that is the top of a layer: with 0.2 mm layers and a 0.2 mm first layer, a pocket that ends at 2.8 mm needs `pause_before_z` 3.0.
+
 ## Multi-colour models
 
-The Creator 5 has four toolheads. A 3MF that assigns its parts to different filaments keeps its objects, its parts and those assignments, whether it was saved by Bambu Studio, OrcaSlicer or Flash Studio, or is a plain 3MF with colours as base materials. Colour painting on a Bambu or Orca model is kept too.
+The Creator 5 has four toolheads. A 3MF that assigns its parts to different filaments keeps its objects, its parts and those assignments, whether it was saved by Bambu Studio, OrcaSlicer or Flash Studio, or is a plain 3MF with colours as base materials. Colour painting on a Bambu or Orca model is kept too. A CAD export that names the toolhead only in a part number (`Logo_Black_Extruder2`) is read as well, and separate items whose boxes overlap, such as a logo set into a body, are joined into one object so they cannot be moved apart.
+
+`models/two_colour_test/build_test.py` writes a small two-colour test piece (two blocks side by side, about 12 minutes and 4 g). Print it before a long multi-colour job to prove toolhead changes and the purge tower.
 
 Name the filament in each toolhead: `filament` for toolhead 1, `other_filaments` for the rest. If you name fewer than the model uses, the others get toolhead 1's filament in the model's own colours, and a warning lists which colour to load where. The purge tower is switched on for these jobs.
 
@@ -163,10 +173,14 @@ This server never sends anything to the printer. Flash Studio's own Print button
 
 ## Limits in this version
 
-- Models must be STL, OBJ or 3MF. Neither Flash Studio's nor OrcaSlicer's command line reads STEP; open a STEP file in Flash Studio and export it as STL.
+- Models can be STL, OBJ, 3MF or STEP. STEP needs the optional `cascadio` library (about 70 MB), which `scripts/setup.sh` installs; with `pip`, install `creator5-slicer-mcp[step]`. Without it, a STEP file gets a message saying how to add it.
 - From a 3MF with several plates, only plate 1 is used.
 - `auto_orient` works on single-part models only. Turning a model of several parts would merge them.
 - Every toolhead shares one process. Where two materials want different process settings, the slower speed wins.
+- Every toolhead shares one bed. The slicer heats it to the highest temperature any filament asks for; when filaments differ by 10 C or more, a warning says which toolhead that is too hot for.
+- Detail thinner than two nozzle lines (0.8 mm on the 0.4 mm nozzle) prints soft. The server measures it and warns, and switches to variable-width walls, but it cannot make a 0.4 mm nozzle draw a 0.6 mm letter stroke cleanly.
+- No setting smooths the underside: it copies the build plate.
+- The fine detail and narrow gap measures sample dense meshes, so a very small patch can be missed. They look at upright walls only.
 - The recommended values are reasoned starting points, not measured optima. See [docs/SETTINGS.md](docs/SETTINGS.md).
 
 ## Development

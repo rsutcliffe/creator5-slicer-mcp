@@ -64,15 +64,29 @@ Supports go on by area, not by share of the surface. The PS5 holder has 112 mm²
 
 `supports` and `brim` accept `auto`, `on` or `off`. An explicit `on` or `off` beats both the designer's file and the shape check.
 
+## Fine detail
+
+Each part's upright walls are measured through the part. Where 5 mm² or more of wall is thinner than two nozzle widths (0.8 mm on the 0.4 mm nozzle), the plan:
+
+- warns, naming the part and the thickness found;
+- sets `wall_generator = arachne`, so a thin stroke gets one line of the right width;
+- when that detail sits on the bed, slows the first layer to 20 mm/s and its infill to 30 mm/s.
+
+A slot between two walls of one part that is narrower than one nozzle width (0.4 mm), over 5 mm² or more, gets a warning that it may close up. This is a rule of thumb, not yet seen on a print, and changes no setting. The key tag has 3.8 mm² of 0.2 mm gaps in its logo, under the threshold.
+
+Evidence: the key tag wordmark, strokes of 0.6 to 0.8 mm. With classic walls it blurred; with Arachne and the slow first layer it read cleanly but stayed short of a professional finish (eight tags, 16 and 17 Nov 2026). On that model the measure finds 0.63 mm in the logo and 0.47 mm in the body, the slivers of white inside the letters.
+
 ## Evidence from prints
 
 Results are logged in `print_results.json` in the output folder. Each row here is a real print.
 
 | Date | Part | Filament | Settings | Changed by hand | Outcome |
 |---|---|---|---|---|---|
-| 15 Nov 2026 | Downloaded PS5 controller holder, two copies, 60.3 g | Black Creality Ender PLA: Generic PLA @FF C5, nozzle 215 C, bed 60 C, flow cap 6.7 mm³/s | 0.20mm Standard @FF C5, functional strength (4 walls, 25% gyroid, 6 top and 5 bottom layers), ironed top, no brim | Supports switched on; model swapped into an older project; part cloned | Good quality. Support removal, strength and fit not yet reported. |
+| 15 Nov 2026 | Downloaded PS5 controller holder, two copies, 60.3 g | Black Creality Ender PLA: Generic PLA @FF C5, nozzle 215 C, bed 60 C, flow cap 6.7 mm³/s | 0.20mm Standard @FF C5, functional strength (4 walls, 25% gyroid, 6 top and 5 bottom layers), ironed top, no brim | Supports switched on; model swapped into an older project; part cloned | Good quality. Supports came off cleanly. Strength and fit not yet reported. |
+| 16 Nov 2026 | ThinkTribal NFC key tag, 36 x 62.5 x 4 mm, logo inlay face down, NFC sticker embedded at a pause | White and black Elegoo Rapid PETG on Flashforge HS PETG @FF C5. Asked for 255 C and a 70 C bed; Flash Studio swapped toolhead 2 to Generic HS PETG, so the bed ran at 80 C and the logo likely at 235 C | 0.20mm Standard @FF C5, first layer 0.20 mm, 4 walls, 30% gyroid, 5 shells, no supports, pause before 3.0 mm | None | Acceptable. Works: the tag reads. Logo square and T clean; the small wordmark lost its i dots and fine strokes; a first-layer lip on the bottom edge; wisps of stringing in the loop hole. |
+| 17 Nov 2026 | ThinkTribal NFC key tag v1.2: logo 30 mm, QR code on the back | As the row above: white at 255 C, black on Generic HS PETG at 235 C, bed 80 C | As above, with Arachne walls, first layer 20 mm/s outlines and 30 mm/s fill, first-layer line 0.42 mm | None | Good. Wordmark reads cleanly with its i dots; one white blob in the letter a. QR code scans. Pause, sticker and resume worked. |
 
-What this supports: the Ender PLA label figures, the functional strength tier and the 0.20 mm preset give a good result on this machine. What it does not cover: fine or best quality, other filaments, or more than one toolhead.
+What this supports: the Ender PLA label figures, the functional strength tier and the 0.20 mm preset give a good result on this machine, and Flash Studio's default tree support gap and interface release cleanly from this PLA, so the server leaves them alone. What it does not cover: fine or best quality, other filaments, or more than one toolhead. At fine and best the flow per second is now the same as in this print, but the line speed is higher, so the first fine or best print should be watched.
 
 ## How the result is checked
 
@@ -101,7 +115,7 @@ The purge tower is switched off for single-filament jobs and on when a job uses 
 
 ## More than one filament
 
-Each toolhead gets its own filament preset, label figures and colour. The process (layer height, walls, infill, speeds) is shared, chosen for toolhead 1's filament. A second material's own process needs are added without replacing anything already chosen, and where both set a speed the slower one is used. Example: silk PLA in toolhead 4 slows the outer wall to 60 mm/s for the whole job.
+Each toolhead gets its own filament preset and colour. Only toolhead 1 keeps a spool's own label figures: Flash Studio replaces any changed filament on toolheads 2 to 4 with a generic preset when it slices. So a later toolhead gets the stock preset of the same material whose bed temperature is nearest the one wanted, then whose nozzle temperature is nearest, and a warning gives the figures it will really print at. The bed comes first because it is shared and the hottest request wins. Put the spool whose figures matter most on toolhead 1. The process (layer height, walls, infill, speeds) is shared, chosen for toolhead 1's filament. A second material's own process needs are added without replacing anything already chosen, and where both set a speed the slower one is used. Example: silk PLA in toolhead 4 slows the outer wall to 60 mm/s for the whole job.
 
 Colours come, in order, from a colour word in the request, the saved spool, then the model file's own colour for that toolhead.
 
@@ -123,12 +137,19 @@ Flashforge's filament presets are tuned for Flashforge's own spools. Other maker
 
 Speed is limited through the flow cap, not by editing each speed setting, because the cap also covers infill, top surfaces and any other move.
 
+### A proven flow limit beats the label's speed
+
+A cap worked out from the label's speed shrinks with the layer: 80 mm/s gives 6.7 mm³/s at 0.20 mm but only 3.4 at 0.10 mm. A filament's real limit is how fast it melts, which does not depend on layer height. So a spool can carry `max_flow`, a limit proven by a print or a flow test, and that is used at every layer height.
+
+The black Ender PLA spool has `max_flow` 6.7 mm³/s, proven by the good print of 15 November 2026. On the PS5 holder this cut best quality from 2h 51m to 2h 26m and fine from 2h 11m to 1h 42m. A flow test in Flash Studio (Calibration menu) could raise it further.
+
 ## Optional flags
 
 | Flag | Effect |
 |---|---|
 | `precise_fit` | inner wall first, precise outer wall on, for parts that mate with other parts |
 | `smooth_top` | irons top surfaces |
+| `finish=smooth` | at least `fine` layers (0.12 mm on the 0.4 mm nozzle) and ironed tops. Warns that the underside copies the plate, and that ironing is untried on anything but PLA. Checked in the real G-code (`;TYPE:Ironing` present); not yet judged on a print |
 | `layer_height` | picks the preset nearest to an exact layer height |
 | `process_overrides` | any OrcaSlicer process key, applied last |
 | `filament_overrides` | any OrcaSlicer filament key, applied last |

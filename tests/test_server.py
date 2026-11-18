@@ -76,11 +76,31 @@ def test_auto_orient_builds_project_and_gcode_from_one_oriented_file(fake_env, c
     assert result["model"]["file"] == str(job / "oriented" / "cube.stl")
 
 
-def test_step_file_is_refused_with_what_to_do(fake_env, tmp_path):
-    step = tmp_path / "bracket.step"
-    step.write_text("ISO-10303-21;")
-    error = server.slice_model(str(step), "PLA")["error"]
-    assert "STL, OBJ and 3MF only" in error and "export it as STL" in error
+def test_step_file_is_converted_once_and_sliced(fake_env, tmp_path):
+    import pytest
+    pytest.importorskip("cascadio")
+    from conftest import write_step_box
+    result = server.slice_model(str(write_step_box(tmp_path / "bracket.step", 40, 25, 12)), "PLA")
+    assert result["ok"], result
+    assert result["model"]["size_mm"] == [40.0, 25.0, 12.0] and result["model"]["volume_cm3"] == 12.0
+    assert result["objects"] == ["bracket"] and any("STEP" in n for n in result["notes"])
+    job = Path(result["job_dir"])
+    assert job.name.endswith("_bracket") and (job / "bracket.obj").is_file()
+    assert not list(job.parent.glob("*_converting"))
+    assert server.analyse_model(str(tmp_path / "bracket.step"))["size_mm"] == [40.0, 25.0, 12.0]
+
+
+def test_step_without_the_converter_or_with_a_bad_file_says_what_to_do(fake_env, tmp_path, monkeypatch):
+    import importlib.util
+    bad = tmp_path / "broken.step"
+    bad.write_text("not a step file")
+    if importlib.util.find_spec("cascadio") is not None:
+        assert "could not be read as a STEP file" in server.slice_model(str(bad), "PLA")["error"]
+        assert not list((fake_env / "out").glob("*_converting"))
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name == "cascadio" else real(name, *a))
+    error = server.slice_model(str(bad), "PLA")["error"]
+    assert "pip install cascadio" in error and "export it as STL" in error
 
 
 def test_spool_register_fills_in_the_label_and_colour(fake_env, cube_stl, capsys):
@@ -100,6 +120,21 @@ def test_spool_register_fills_in_the_label_and_colour(fake_env, cube_stl, capsys
     assert _project_settings(server.slice_model(str(cube_stl), "white PLA"))["nozzle_temperature"] == ["210"]
 
 
+def test_a_proven_flow_limit_holds_at_every_layer_height(fake_env, cube_stl):
+    server.save_spool("black pla", "ender pla", 215, 60, 80, "black", max_flow=6.7)
+    for quality in ("standard", "fine"):       # 0.2 mm and 0.12 mm layers
+        settings = _project_settings(server.slice_model(str(cube_stl), "black pla", quality=quality))
+        assert settings["filament_max_volumetric_speed"] == ["6.7"], quality
+    # Without the proven limit the label's speed gives a cap that shrinks with the layer.
+    server.save_spool("black pla", "ender pla", 215, 60, 80, "black")
+    assert _project_settings(server.slice_model(str(cube_stl), "black pla", quality="fine"))["filament_max_volumetric_speed"] == ["4"]
+    # A speed given with the request beats the saved flow limit; a silly limit is refused.
+    server.save_spool("black pla", "ender pla", max_flow=6.7)
+    assert _project_settings(server.slice_model(str(cube_stl), "black pla", max_speed=40))["filament_max_volumetric_speed"] == ["3.4"]
+    server.save_spool("black pla", "ender pla", max_flow=500)
+    assert "max_flow" in server.slice_model(str(cube_stl), "black pla")["error"]
+
+
 def test_multi_colour_3mf_keeps_objects_parts_and_toolheads(fake_env, colour_3mf):
     import zipfile
     result = server.slice_model(str(colour_3mf), "black PLA", other_filaments=["white PETG"], copies=2)
@@ -111,10 +146,12 @@ def test_multi_colour_3mf_keeps_objects_parts_and_toolheads(fake_env, colour_3mf
     assert settings["filament_colour"] == ["#161616", "#F2F2F2", "#C89B3C"]
     assert settings["nozzle_temperature"] == ["210", "255", "210"] and settings["filament_diameter"] == ["1.75"] * 3
     assert settings["enable_prime_tower"] == "1" and len(settings["different_settings_to_system"]) == 5
+    assert settings["filament_self_index"] == ["1", "2", "3"]
     assert settings["inherits_group"] == [""] * 5
     assert any("toolhead 3 (#C89B3C)" in w for w in result["plan"]["warnings"])
     assert any("Dry the spool" in w for w in result["plan"]["warnings"])          # PETG's warning carried over
     assert settings["support_top_z_distance"] == "0.25"                           # and PETG's wider gap above supports
+    assert not any("bed will run" in w for w in result["plan"]["warnings"])       # this fixture's presets share one bed temperature
     with zipfile.ZipFile(result["project_3mf"]) as archive:
         config = archive.read("Metadata/model_settings.config").decode()
         model_xml = archive.read("3D/3dmodel.model").decode()
@@ -124,6 +161,33 @@ def test_multi_colour_3mf_keeps_objects_parts_and_toolheads(fake_env, colour_3mf
     assert model_xml.count("<item objectid") == 4 and model_xml.count("<component ") == 3
     assert 'paint_color="8"' in model_xml
     assert result["settings_mismatched"] == []
+
+
+def test_only_toolhead_1_carries_a_spools_own_figures(fake_env, colour_3mf):
+    """Flash Studio swaps any changed filament on toolheads 2 to 4 for a generic preset, so those get the
+    nearest stock preset: nearest bed first, since the bed is shared, then nearest nozzle."""
+    server.save_spool("my pla", "PLA", nozzle_temp=205, bed_temp=55)
+    server.save_spool("warm pla", "PLA", nozzle_temp=222, bed_temp=65)
+    result = server.slice_model(str(colour_3mf), "my pla", other_filaments=["warm pla", "PLA"])
+    assert result["ok"] and result["settings_mismatched"] == [], result
+    settings = _project_settings(result)
+    # Toolhead 1 keeps 205 and 55; toolhead 2 becomes the stock preset nearest 65 and 222; toolhead 3 is untouched.
+    assert settings["filament_settings_id"] == ["Flashforge PLA Basic @FF C5", "Generic PLA @FF C5", "Flashforge PLA Basic @FF C5"]
+    assert settings["nozzle_temperature"] == ["205", "220", "210"] and settings["textured_plate_temp"] == ["55", "65", "65"]
+    changed = settings["different_settings_to_system"]
+    assert "nozzle_temperature" in changed[1] and changed[2:] == ["", "", ""]
+    assert any("Toolhead 2" in w and "Generic PLA @FF C5" in w and "222 C and 65 C were asked for" in w for w in result["plan"]["warnings"])
+    # The bed is shared and the hottest wins, which the plan says when toolheads are 10 C or more apart.
+    assert any("bed will run at 65 C" in w and "toolhead 1" in w for w in result["plan"]["warnings"])
+
+
+def test_check_setup_says_which_code_is_running(fake_env, monkeypatch):
+    report = server.check_setup()
+    assert report["server_version"] == "0.2.0" and report["restart_needed"] is False
+    assert report["code_revision"] == server._STARTED_AT_REVISION
+    # The code on disk moved on after the server started.
+    monkeypatch.setattr(server, "_code_revision", lambda: "abc1234")
+    assert server.check_setup()["restart_needed"] is True
 
 
 def test_too_many_filaments_and_orienting_several_parts(fake_env, colour_3mf, cube_stl):
@@ -154,6 +218,11 @@ def test_crash_after_complete_gcode_is_usable_but_noted(fake_env, cube_stl):
     result = server.slice_model(str(cube_stl), "PLA", process_overrides={"wall_loops": 97})
     assert result["ok"] and result["gcode_complete"] and result["exit_code"] != 0
     assert "complete" in result["notes"][0]
+
+
+def test_rejected_settings_file_is_an_error_not_a_default_print(fake_env, cube_stl):
+    result = server.slice_model(str(cube_stl), "PLA", process_overrides={"wall_loops": 95})
+    assert not result["ok"] and "could not read the project's settings" in result["error"]
 
 
 def test_unfinished_gcode_is_rejected(fake_env, cube_stl):
@@ -222,7 +291,8 @@ def test_tools_over_real_stdio_transport(fake_env, cube_stl):
 
     names, payload = asyncio.run(run())
     assert names == {"check_setup", "list_filaments", "analyse_model", "recommend_settings", "slice_model",
-                     "open_in_slicer", "save_spool", "record_print_result", "compare_with_saved_project"}
+                     "open_in_slicer", "save_spool", "record_print_result", "compare_with_saved_project",
+                     "check_flash_studio_slice"}
     assert payload["ok"] and payload["summary"]["print_time"] == "1h 23m"
 
 
@@ -306,3 +376,87 @@ def test_print_result_is_recorded_with_what_was_changed_by_hand(fake_env, cube_s
     assert "2 results so far" in capsys.readouterr().out
     assert "outcome must be" in server.record_print_result(job["project_3mf"], "perfect")["error"]
     assert "not a slicer project" in server.record_print_result(str(cube_stl), "good")["error"]
+
+
+def test_part_number_labels_give_toolheads_and_touching_parts_become_one_object(fake_env, labelled_3mf, colour_3mf):
+    import zipfile
+    from creator5_mcp import model
+    loaded = model.load_objects(labelled_3mf)
+    assert [(o["name"], [(p["name"], p["extruder"]) for p in o["parts"]]) for o in loaded["objects"]] == [
+        ("KeyTag_TwoColour", [("Body White Extruder1", 1), ("Logo Black Extruder2", 2)])]
+    # Parts that sit apart stay separate objects.
+    assert [o["name"] for o in model.load_objects(colour_3mf)["objects"]] == ["Figure", "Plinth"]
+    result = server.slice_model(str(labelled_3mf), "white PETG", other_filaments=["black PETG"])
+    assert result["ok"] and result["objects"] == ["KeyTag_TwoColour"] and len(result["plan"]["filaments"]) == 2
+    with zipfile.ZipFile(result["project_3mf"]) as archive:
+        config = archive.read("Metadata/model_settings.config").decode()
+    assert config.count("<object ") == 1 and config.count("<part ") == 2
+    assert [int(v) for v in __import__("re").findall(r'key="extruder" value="(\d)"', config)] == [1, 1, 2]
+
+
+def test_pause_before_a_height_is_written_and_found_in_the_gcode(fake_env, cube_stl):
+    import zipfile
+    result = server.slice_model(str(cube_stl), "PLA", pause_before_z=3.0)
+    assert result["ok"] and result["pauses_at_z"] == [3.0] and any("pauses before the layer at 3 mm" in n for n in result["notes"])
+    with zipfile.ZipFile(result["project_3mf"]) as archive:
+        xml = archive.read("Metadata/custom_gcode_per_layer.xml").decode()
+    assert 'top_z="3"' in xml and 'type="1"' in xml and 'gcode="M25"' in xml and '<mode value="SingleExtruder"/>' in xml
+    plain = server.slice_model(str(cube_stl), "PLA")
+    assert plain["pauses_at_z"] == [] and "Metadata/custom_gcode_per_layer.xml" not in zipfile.ZipFile(plain["project_3mf"]).namelist()
+
+
+def test_the_print_log_is_read_back_when_recommending(fake_env, cube_stl):
+    first = server.slice_model(str(cube_stl), "PETG")
+    assert first["ok"] and first["plan"]["earlier_prints"] == []
+    server.record_print_result(first["project_3mf"], "acceptable", "Lettering smudged and the surfaces feel rough.")
+    again = server.recommend_settings("PETG", str(cube_stl))["plan"]
+    assert [p["outcome"] for p in again["earlier_prints"]] == ["acceptable"] and again["earlier_prints"][0]["same_model"]
+    assert any("this model" in w and "rated acceptable: Lettering smudged" in w for w in again["warnings"])
+    # Another model in the same filament still hears about it; another filament does not.
+    assert any("this filament preset" in w for w in server.recommend_settings("PETG")["plan"]["warnings"])
+    assert server.recommend_settings("PLA")["plan"]["earlier_prints"] == []
+    server.record_print_result(first["project_3mf"], "good", "Clean.")
+    latest = server.recommend_settings("PETG", str(cube_stl))["plan"]
+    assert not any("rated" in w for w in latest["warnings"]) and any("rated good" in r for r in latest["rationale"])
+
+
+def test_flash_studios_own_slice_is_found_by_its_origin_and_compared_with_the_project(fake_env, cube_stl, tmp_path):
+    import shutil
+    import zipfile
+    from creator5_mcp import slicer
+    result = server.slice_model(str(cube_stl), "PETG", nozzle_temp=250)
+    project = Path(result["project_3mf"])
+    root = tmp_path / "recovery"
+    assert slicer.studio_gcode(project, [root]) is None
+    for name, origin in (("other", tmp_path / "another.3mf"), ("mine", project)):
+        session = root / f"20261117T1#{name}"
+        (session / "Metadata").mkdir(parents=True)
+        (session / "origin.txt").write_text(str(origin))
+        shutil.copy(result["gcode"], session / "Metadata" / ".1.0.gcode")
+    found = slicer.studio_gcode(project, [root])
+    assert found == root / "20261117T1#mine" / "Metadata" / ".1.0.gcode"
+    with zipfile.ZipFile(project) as archive:
+        asked = json.loads(archive.read("Metadata/project_settings.config"))
+    report = slicer.studio_report(found, asked)
+    assert report["differs_from_project"] == [] and report["toolheads"][0]["nozzle_c"] == 250
+    # Flash Studio swapping the filament shows up as a difference.
+    found.write_text(found.read_text().replace("; nozzle_temperature = 250", "; nozzle_temperature = 235"))
+    swapped = slicer.studio_report(found, asked)
+    assert swapped["toolheads"][0]["nozzle_c"] == 235
+    assert swapped["differs_from_project"] == ["nozzle_temperature: project has 250, Flash Studio sliced 235"]
+
+
+def test_setup_reports_a_flash_studio_release_other_than_the_one_tested(fake_env, tmp_path, monkeypatch):
+    import plistlib
+    from creator5_mcp import slicer
+    assert "warning" not in server.check_setup()          # not an app bundle: nothing to compare
+    app = tmp_path / "Flash Studio.app" / "Contents"
+    (app / "MacOS").mkdir(parents=True)
+    (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleShortVersionString": "9.9"}))
+    binary = app / "MacOS" / "Flash Studio"
+    binary.write_bytes(Path(os.environ["ORCA_SLICER_PATH"]).read_bytes())
+    binary.chmod(0o755)
+    monkeypatch.setenv("ORCA_SLICER_PATH", str(binary))
+    report = server.check_setup()
+    assert report["flash_studio_version"] == "9.9" and report["tested_with"] == slicer.TESTED_FLASH_STUDIO
+    assert "Flash Studio is now 9.9" in report["warning"]

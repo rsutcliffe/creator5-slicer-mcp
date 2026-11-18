@@ -145,7 +145,7 @@ def filament_presets(profiles_dir: Path, nozzle: str, pro: bool = False) -> dict
         out[name] = {
             "type": _first(flat.get("filament_type")),
             "nozzle_temperature": _first(flat.get("nozzle_temperature")),
-            "bed_temperature": _first(flat.get("hot_plate_temp")),
+            "bed_temperature": _first(flat.get("textured_plate_temp") or flat.get("hot_plate_temp")),
             "max_volumetric_speed": _first(flat.get("filament_max_volumetric_speed")),
             "density": _first(flat.get("filament_density")),
             "diameter": _first(flat.get("filament_diameter")),

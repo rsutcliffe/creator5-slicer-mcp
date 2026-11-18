@@ -76,6 +76,13 @@ def project_settings(profiles_dir: Path, plan: dict, extra_process: dict | None 
     otherwise the plan's single filament is used with `colour`. extra_filament applies to all.
     Returns the document and the caller's override keys the presets do not define
     (passed through, but worth flagging: a misspelt key is silently ignored by the slicer).
+
+    Only toolhead 1's filament carries changed values. Flash Studio replaces any other filament
+    that is not one of its stock presets with a generic one when it slices (seen three times on
+    the machine, 16 and 17 Nov 2026: inline changes, a preset embedded in the project and a preset
+    saved in Flash Studio all became Generic HS PETG). Toolheads 2 to 4 are written as stock presets.
+    The printer's bed_temperature_formula was tried too: by_first_filament follows whichever toolhead
+    prints first on each layer, so it does not hold the bed at toolhead 1's temperature.
     """
     slots = plan.get("filaments") or [{"preset": plan["filament_preset"], "overrides": plan["filament_overrides"], "colour": colour}]
     machine = profiles.flatten(profiles_dir, "machine", plan["machine_preset"])
@@ -85,8 +92,8 @@ def project_settings(profiles_dir: Path, plan: dict, extra_process: dict | None 
     process, _ = profiles.apply_overrides(process, process_over)
 
     filaments, changed = [], []
-    for slot in slots:
-        over = {**slot["overrides"], **(extra_filament or {})}
+    for index, slot in enumerate(slots):
+        over = {} if index else {**slot["overrides"], **(extra_filament or {})}
         flat = profiles.flatten(profiles_dir, "filament", slot["preset"])
         unknown += [k for k in (extra_filament or {}) if k not in flat and k not in unknown]
         flat, _ = profiles.apply_overrides(flat, over)
@@ -105,7 +112,10 @@ def project_settings(profiles_dir: Path, plan: dict, extra_process: dict | None 
         merged.update({k: v for k, v in preset.items() if k not in _NOT_SETTINGS})
     # Filament settings hold one value per toolhead.
     for key in {k for flat in filaments for k in flat if k not in _NOT_SETTINGS}:
-        values = [flat.get(key, filaments[0].get(key)) for flat in filaments]
+        # A preset that leaves a key out borrows the value of one that has it: a gap in the list
+        # makes the slicer reject the whole settings file and fall back to its defaults.
+        known = next(flat[key] for flat in filaments if flat.get(key) is not None)
+        values = [flat.get(key) if flat.get(key) is not None else known for flat in filaments]
         merged[key] = [v[0] if isinstance(v, list) and v else v for v in values] if any(isinstance(v, list) for v in values) else values[0]
     merged.update({
         "name": "project_settings",
@@ -115,6 +125,9 @@ def project_settings(profiles_dir: Path, plan: dict, extra_process: dict | None 
         "print_settings_id": plan["process_preset"],
         "filament_settings_id": [slot["preset"] for slot in slots],
         "filament_colour": [slot["colour"] for slot in slots],
+        # Which toolhead each entry of a filament setting belongs to. Without it the slicer reads
+        # toolhead 1's values for every toolhead (seen in the G-code; Flash Studio writes it on save).
+        "filament_self_index": [str(i + 1) for i in range(len(slots))],
         # One entry each for: process, every filament, printer.
         "inherits_group": [""] * (len(slots) + 2),
         "different_settings_to_system": [";".join(sorted(process_over)), *changed, ""],
@@ -206,10 +219,12 @@ def _documents(title: str, objects: list[dict], copies: int, toolheads: int) -> 
 
 def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Path, copies: int = 1,
                   extra_process: dict | None = None, extra_filament: dict | None = None,
-                  colour: str = "#161616") -> dict:
+                  colour: str = "#161616", pause_before_z: float = 0) -> dict:
     """Create the .3mf project and return a short description of it.
 
-    colour is used only when the plan does not list its filaments."""
+    colour is used only when the plan does not list its filaments.
+    pause_before_z, in mm, pauses the print before the layer whose top is at that height,
+    with the printer's own pause command."""
     if copies < 1:
         raise ProjectError("copies must be at least 1")
     try:
@@ -226,6 +241,14 @@ def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Pa
         archive.writestr("3D/3dmodel.model", model_xml)
         archive.writestr("Metadata/model_settings.config", config_xml)
         archive.writestr("Metadata/project_settings.config", json.dumps(settings, indent=4))
+        if pause_before_z:
+            # As _BBS_3MF_Exporter writes it: type 1 is a pause, at the print height of the layer it comes before.
+            mode = "MultiExtruder" if len(settings["filament_settings_id"]) > 1 else "SingleExtruder"
+            archive.writestr("Metadata/custom_gcode_per_layer.xml",
+                             '<?xml version="1.0" encoding="utf-8"?>\n<custom_gcodes_per_layer>\n<plate>\n<plate_info id="1"/>\n'
+                             f'<layer top_z="{pause_before_z:g}" type="1" extruder="1" color="" extra="" '
+                             f'gcode="{_xml(str(settings.get("machine_pause_gcode") or ""))}"/>\n'
+                             f'<mode value="{mode}"/>\n</plate>\n</custom_gcodes_per_layer>\n')
     return {
         "project": str(out_path),
         "copies": copies,

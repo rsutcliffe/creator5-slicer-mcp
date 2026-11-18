@@ -130,6 +130,7 @@ QUALITY: dict[str, tuple[float, str]] = {
     "fine": (0.3, "Thin layers and slower outer walls for a smooth surface; roughly doubles print time."),
     "best": (0.25, "The thinnest practical layers and slower outer walls for the smoothest surface; the slowest choice."),
 }
+FINISH = ("standard", "smooth")
 
 AUTO, ON, OFF = "auto", "on", "off"
 OVERHANG_MM2 = 25.0   # unsupported underside, in mm², above which supports go on (about 5 x 5 mm)
@@ -169,6 +170,8 @@ def recommend(
     max_speed: int | None = None,
     designer: dict | None = None,
     toolheads: int = 1,
+    max_flow: float | None = None,
+    finish: str = "standard",
 ) -> dict:
     """Build a full settings plan. Pure function: nothing is written or sliced.
 
@@ -177,7 +180,16 @@ def recommend(
     designer holds the shape-dependent settings saved in the model's 3MF
     (model.designer_settings); with supports or brim on auto they are followed.
     toolheads is how many filaments the job uses; above one, the purge tower stays on.
+    max_flow is the spool's proven flow limit in mm3/s; it replaces the cap worked out from max_speed.
+    finish "smooth" asks for the smoothest surfaces the printer gives: at least fine layers, ironed tops.
     """
+    if finish not in FINISH:
+        raise RecommendError(f"finish must be one of {', '.join(FINISH)}")
+    smooth = finish == "smooth"
+    if smooth:
+        smooth_top = True
+        if quality in ("draft", "standard"):
+            quality = "fine"
     if quality not in QUALITY:
         raise RecommendError(f"quality must be one of {', '.join(QUALITY)}")
     if strength not in STRENGTH:
@@ -254,6 +266,14 @@ def recommend(
     if smooth_top:
         overrides["ironing_type"] = "top"
         rationale.append("Top surfaces ironed for a smooth finish; adds time on parts with large flat tops.")
+    if smooth:
+        rationale.append(f"Smooth finish: {layer:g} mm layers for finer lines on the sides, and ironed tops.")
+        # The plate is chosen in Flash Studio's window, not in a preset, so this cannot tell which one is fitted.
+        warnings.append("The underside copies the build plate, so on a textured plate it stays rough whatever the settings. "
+                        "Only a smooth plate gives a smooth underside.")
+        if "PLA" not in material.label:
+            warnings.append(f"Ironing has not been tried with {material.label} on this printer; it is known to work best on PLA. "
+                            "Check the first ironed top before printing a batch.")
 
     # Material-specific process changes ---------------------------------------
     for key, value in material.process.items():
@@ -277,6 +297,27 @@ def recommend(
             warnings.append(f"Model is {shape['size_mm']} mm and only fits the 256 mm bed if rotated.")
         else:
             warnings.append(f"Model is {shape['size_mm']} mm, larger than the 256 x 256 x 256 mm build volume. Scale or split it.")
+
+    for detail in (shape or {}).get("fine_detail", []):
+        warnings.append(
+            f"'{detail['part']}' has detail about {detail['thickness_mm']:g} mm wide. The {nozzle} mm nozzle lays lines about "
+            f"{line_width:g} mm wide, so that is one or two passes: small lettering and thin lines will print soft or smudged. "
+            f"Make the detail wider than {2 * float(nozzle):g} mm, or fit a smaller nozzle. "
+            "(Key tag wordmark, 0.6 to 0.8 mm strokes on the 0.4 mm nozzle, printed smudged, 17 Nov 2026.)")
+    for slot in (shape or {}).get("narrow_gaps", []):
+        # Rule of thumb, not yet seen on a print: a slot narrower than one line has no room for the nozzle's own spread.
+        warnings.append(
+            f"'{slot['part']}' has gaps about {slot['width_mm']:g} mm wide, narrower than one {nozzle} mm nozzle line. "
+            "Slots, engraved lines and the spaces between letters that narrow tend to close up or fuse. "
+            f"Open them to more than {float(nozzle):g} mm, or fit a smaller nozzle.")
+    if shape and shape.get("fine_detail"):
+        if base.get("wall_generator") != "arachne":
+            overrides["wall_generator"] = "arachne"
+        rationale.append("Variable-width walls (Arachne) for the fine detail: one line that fits a thin stroke, not two that overlap.")
+        if any(d["on_first_layer"] for d in shape["fine_detail"]):
+            overrides["initial_layer_speed"] = f"{min(float(base.get('initial_layer_speed') or 20), 20):g}"
+            overrides["initial_layer_infill_speed"] = f"{min(float(base.get('initial_layer_infill_speed') or 30), 30):g}"
+            rationale.append("First layer slowed to 20 mm/s, 30 mm/s for its infill, because the fine detail sits on the bed.")
 
     designer = designer or {}
 
@@ -356,7 +397,20 @@ def recommend(
             filament_overrides[plate] = str(bed_temp)
             filament_overrides[plate + "_initial_layer"] = str(bed_temp)
         rationale.append(f"Bed set to {bed_temp} C to match the spool.")
-    if max_speed:
+    if max_flow:
+        # A filament's limit is how fast it melts, which does not change with layer height. A cap
+        # worked out from the label's speed halves at half the layer height; a proven one does not.
+        if not 1 <= max_flow <= 60:
+            raise RecommendError("max_flow must be between 1 and 60 mm3/s")
+        preset = profiles.flatten(profiles_dir, "filament", filament_preset)
+        current = preset.get("filament_max_volumetric_speed")
+        current = float(current[0] if isinstance(current, list) else current or 0) or None
+        if current is None or max_flow < current:
+            filament_overrides["filament_max_volumetric_speed"] = f"{max_flow:g}"
+            rationale.append(f"Flow capped at {max_flow:g} mm3/s, this spool's proven limit, at every layer height.")
+        else:
+            rationale.append(f"The preset's own flow limit ({current:g} mm3/s) is already under this spool's {max_flow:g} mm3/s.")
+    elif max_speed:
         if not 10 <= max_speed <= 600:
             raise RecommendError("max_speed must be between 10 and 600 mm/s")
         preset = profiles.flatten(profiles_dir, "filament", filament_preset)

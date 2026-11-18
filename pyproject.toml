@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "creator5-slicer-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server that slices models for the Flashforge Creator 5 with OrcaSlicer, choosing quality, strength and filament settings for you."
 readme = "README.md"
 license = { text = "MIT" }
@@ -13,6 +13,7 @@ dependencies = ["mcp>=1.2", "numpy>=1.24"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+step = ["cascadio>=0.1.1"]   # reads STEP files; about 70 MB, so optional
 
 [project.scripts]
 creator5-slicer-mcp = "creator5_mcp.server:main"

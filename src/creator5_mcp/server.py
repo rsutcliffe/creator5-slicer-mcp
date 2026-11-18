@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import platform
 import re
 import subprocess
 import time
+import zipfile
 from pathlib import Path
 
 try:  # mcp 2.x
@@ -28,7 +30,9 @@ mcp = FastMCP(
         "warnings to the user. If the user gives figures from the spool's label, pass them as "
         "nozzle_temp, bed_temp and max_speed, and offer to keep them with save_spool so the spool's name is "
         "enough next time. For a multi-colour model, pass the filaments in toolheads 2 to 4 as other_filaments. "
-        "Use recommend_settings first when the user wants to review choices. When the user says how a print "
+        "Use recommend_settings first when the user wants to review choices. For a job with more than one filament, "
+        "after the user presses Slice plate in Flash Studio, call check_flash_studio_slice to confirm each toolhead's "
+        "temperatures. Pass finish=smooth when the user wants a smooth or professional surface. When the user says how a print "
         "came out, call record_print_result. The user prints from Flash Studio; "
         "this server never sends anything to the printer."
     ),
@@ -36,6 +40,28 @@ mcp = FastMCP(
 
 _ERRORS = (ConfigError, profiles.ProfileError, model.ModelError, recommend.RecommendError,
            slicer.SliceError, project.ProjectError, results.ResultError)
+
+
+def _code_revision() -> str | None:
+    """The git commit this server is running from, when it runs from a checkout.
+
+    The server keeps its code in memory until the client restarts, so this shows whether a
+    restart picked up the latest pull.
+    """
+    try:
+        folder = Path(__file__).resolve().parent
+        commit = subprocess.run(["git", "-C", str(folder), "rev-parse", "--short", "HEAD"],
+                                capture_output=True, text=True, timeout=5)
+        if commit.returncode != 0:
+            return None
+        dirty = subprocess.run(["git", "-C", str(folder), "status", "--porcelain", "--untracked-files=no"],
+                               capture_output=True, text=True, timeout=5).stdout.strip()
+        return commit.stdout.strip() + (" with uncommitted changes" if dirty else "")
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+_STARTED_AT_REVISION = _code_revision()
 
 
 def _fail(exc: Exception) -> dict:
@@ -48,17 +74,28 @@ def _path(value: str) -> Path:
 
 @mcp.tool()
 def check_setup() -> dict:
-    """Report whether the slicer and its Creator 5 presets are ready."""
+    """Report whether the slicer and its Creator 5 presets are ready, and which code this server is running.
+
+    restart_needed is true when the code on disk has changed since this server started.
+    """
     settings = load_settings()
     report: dict = {
         "ok": settings.slicer_path is not None and settings.profiles_dir is not None,
         "server_version": __version__,
+        "code_revision": _STARTED_AT_REVISION,
+        "restart_needed": _STARTED_AT_REVISION != _code_revision(),
         "slicer_path": str(settings.slicer_path) if settings.slicer_path else None,
         "profiles_dir": str(settings.profiles_dir) if settings.profiles_dir else None,
         "output_dir": str(settings.output_dir),
     }
     if settings.slicer_path:
         report["slicer_version"] = slicer.version(settings)
+        release = slicer.app_version(settings)
+        report["flash_studio_version"], report["tested_with"] = release, slicer.TESTED_FLASH_STUDIO
+        if release and release != slicer.TESTED_FLASH_STUDIO:
+            report["warning"] = (f"Flash Studio is now {release}; this server was last tested with {slicer.TESTED_FLASH_STUDIO}. "
+                                 "An update can change defaults and folders. Run the tests (pytest and scripts/smoke_test.py) "
+                                 "before trusting a slice, then set TESTED_FLASH_STUDIO in slicer.py.")
     else:
         report["fix"] = "Install OrcaSlicer or Flash Studio, or set ORCA_SLICER_PATH."
     if settings.slicer_path and not settings.profiles_dir:
@@ -99,7 +136,7 @@ def list_filaments(nozzle: str = "0.4", pro: bool = False) -> dict:
 
 @mcp.tool()
 def save_spool(name: str, filament: str, nozzle_temp: int = 0, bed_temp: int = 0, max_speed: int = 0,
-               colour: str = "") -> dict:
+               colour: str = "", max_flow: float = 0) -> dict:
     """Remember a spool and its label figures, so its name alone is enough in later requests.
 
     Args:
@@ -109,11 +146,13 @@ def save_spool(name: str, filament: str, nozzle_temp: int = 0, bed_temp: int = 0
         bed_temp: Bed temperature in C from the label, or 0 to use the preset.
         max_speed: Fastest print speed in mm/s on the label, or 0 for no extra limit.
         colour: A colour word such as "black", or a hex value such as "#161616".
+        max_flow: Flow limit in mm3/s proven by a good print or a flow test, or 0. When set it is used at
+            every layer height, in place of the cap worked out from max_speed.
     """
     try:
         settings = load_settings()
         recommend.match_material(filament)   # refuse a material this server cannot place
-        return {"ok": True, "spool": spools.save(settings.output_dir, name, filament, nozzle_temp, bed_temp, max_speed, colour)}
+        return {"ok": True, "spool": spools.save(settings.output_dir, name, filament, nozzle_temp, bed_temp, max_speed, colour, max_flow)}
     except _ERRORS + (ValueError,) as exc:
         return _fail(exc)
 
@@ -157,7 +196,7 @@ def compare_with_saved_project(project_3mf: str, saved_project: str) -> dict:
 
 @mcp.tool()
 def analyse_model(model_path: str) -> dict:
-    """Measure an STL, OBJ or 3MF: size, volume, bed contact, overhangs, parts, toolheads used and bed fit.
+    """Measure an STL, OBJ, 3MF or STEP: size, volume, bed contact, overhangs, parts, toolheads used and bed fit.
 
     Args:
         model_path: Absolute path to the model file on this computer.
@@ -177,9 +216,12 @@ def _spool(settings, text: str, nozzle_temp: int = 0, bed_temp: int = 0, max_spe
     saved = spools.find(settings.output_dir, text)
     said = project.colour_for(text, "")
     if not saved:
-        return {"filament": text, "nozzle_temp": nozzle_temp, "bed_temp": bed_temp, "max_speed": max_speed, "colour": said, "note": None}
+        return {"filament": text, "nozzle_temp": nozzle_temp, "bed_temp": bed_temp, "max_speed": max_speed, "max_flow": 0,
+                "colour": said, "note": None}
     return {"filament": saved["filament"], "nozzle_temp": nozzle_temp or saved["nozzle_temp"],
             "bed_temp": bed_temp or saved["bed_temp"], "max_speed": max_speed or saved["max_speed"],
+            # A speed given with the request is the newer instruction, so it beats the saved flow limit.
+            "max_flow": 0 if max_speed else saved.get("max_flow", 0),
             "colour": said or project.colour_for(saved["colour"], ""),
             "note": f"Spool '{saved['name']}' from the register: {saved['filament']}."}
 
@@ -187,7 +229,8 @@ def _spool(settings, text: str, nozzle_temp: int = 0, bed_temp: int = 0, max_spe
 def _plan(model_path: str | None, filament: str, quality: str, strength: str, nozzle: str, supports: str,
           brim: str, layer_height: float | None, precise_fit: bool, smooth_top: bool, pro: bool,
           nozzle_temp: int = 0, bed_temp: int = 0, max_speed: int = 0,
-          shape_path: Path | None = None, other_filaments: list[str] | None = None) -> tuple[dict, dict | None]:
+          shape_path: Path | None = None, other_filaments: list[str] | None = None,
+          finish: str = "standard") -> tuple[dict, dict | None]:
     """shape_path: the file whose shape will print, when it differs from model_path (an oriented or converted copy).
 
     The plan's "filaments" lists one {"preset", "overrides", "colour", "material"} per toolhead used.
@@ -199,7 +242,7 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
         path = _path(model_path)
         designer = model.designer_settings(path)
         angle = float(designer.get("support_threshold_angle") or 0) or model.DEFAULT_SUPPORT_ANGLE
-        analysis = model.analyse(shape_path or path, angle)
+        analysis = model.analyse(shape_path or path, angle, float(nozzle))
     shape = analysis if analysis and analysis.get("analysed") else {}
     said = [filament, *(other_filaments or [])]
     limit = len(profiles.flatten(profiles_dir, "machine", profiles.machine_name(nozzle, pro)).get("nozzle_diameter") or [1])
@@ -211,7 +254,7 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
     plan = recommend.recommend(
         profiles_dir, first["filament"], quality, strength, nozzle, analysis, supports, brim,
         layer_height or None, precise_fit, smooth_top, pro, first["nozzle_temp"] or None, first["bed_temp"] or None,
-        first["max_speed"] or None, designer, toolheads)
+        first["max_speed"] or None, designer, toolheads, first["max_flow"] or None, finish)
     file_colours = shape.get("colours", []) if toolheads > 1 else []
     slots, unnamed = [], []
     for i in range(toolheads):
@@ -222,9 +265,27 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
             # Same layer height and line width as the main plan, so flow caps agree.
             sub = recommend.recommend(profiles_dir, spool["filament"], quality, strength, nozzle, None,
                                       layer_height=plan["layer_height_mm"], pro=pro, nozzle_temp=spool["nozzle_temp"] or None,
-                                      bed_temp=spool["bed_temp"] or None, max_speed=spool["max_speed"] or None)
+                                      bed_temp=spool["bed_temp"] or None, max_speed=spool["max_speed"] or None,
+                                      max_flow=spool["max_flow"] or None)
             preset, overrides, material = sub["filament_preset"], sub["filament_overrides"], sub["material"]
             plan["warnings"] += [w for w in sub["warnings"] if w not in plan["warnings"]]
+            if overrides:
+                # Flash Studio keeps changed filament values on toolhead 1 only, and swaps anything else that is
+                # not a stock preset for a generic one. So this toolhead gets a stock preset of the same material.
+                # The bed is shared and the hottest request wins, so the nearest bed temperature is chosen first,
+                # then the nearest nozzle temperature, which affects this toolhead alone.
+                stock = profiles.filament_presets(profiles_dir, nozzle, pro)
+                want_nozzle = float(overrides.get("nozzle_temperature") or stock[preset]["nozzle_temperature"])
+                want_bed = float(overrides.get("textured_plate_temp") or stock[preset]["bed_temperature"])
+                kind = stock[preset]["type"]
+                preset = min((n for n in stock if stock[n]["type"] == kind and "CF" not in n and "GF" not in n),
+                             key=lambda n: (abs(float(stock[n]["bed_temperature"]) - want_bed),
+                                            abs(float(stock[n]["nozzle_temperature"]) - want_nozzle), n != preset, n))
+                plan["warnings"].append(
+                    f"Toolhead {i + 1}: Flash Studio keeps a spool's own figures on toolhead 1 only. It uses the stock preset "
+                    f"'{preset}': nozzle {stock[preset]['nozzle_temperature']} C and bed {stock[preset]['bed_temperature']} C, "
+                    f"where {want_nozzle:g} C and {want_bed:g} C were asked for.")
+                overrides = {}
             # The other material's own process needs: the slower speed wins, and nothing already chosen is replaced.
             for key, value in recommend.match_material(spool["filament"]).process.items():
                 current = plan["process_overrides"].get(key)
@@ -239,6 +300,7 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
             unnamed.append(f"toolhead {i + 1} ({colour})")
         slots.append({"preset": preset, "overrides": overrides, "colour": colour, "material": material})
     plan["filaments"] = slots
+    _earlier_prints(settings, plan, shape.get("objects", []))
     if toolheads > 1:
         plan["rationale"].append("Toolheads: " + "; ".join(f"{i + 1} = {slot['material']} {slot['colour']}" for i, slot in enumerate(slots)) + ".")
     if unnamed:
@@ -246,6 +308,28 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
                                 f"The rest were given toolhead 1's filament, in the model's colours: {', '.join(unnamed)}. "
                                 "Load those colours, or name each filament.")
     return plan, analysis
+
+
+def _earlier_prints(settings, plan: dict, objects: list[str]) -> None:
+    """Add what the print log says about this filament preset or this model to the plan."""
+    presets = {slot["preset"] for slot in plan["filaments"]}
+    seen = []
+    for entry in reversed(results.load(settings.output_dir)):
+        used = entry.get("filament_presets") or []
+        used = {re.sub(r" \(toolhead \d\)$", "", name) for name in ([used] if isinstance(used, str) else used)}
+        same_model = bool(set(entry.get("objects") or []) & set(objects))
+        if same_model or used & presets:
+            seen.append({"date": entry.get("date"), "outcome": entry.get("outcome"), "same_model": same_model,
+                         "objects": entry.get("objects"), "process_preset": entry.get("process_preset"),
+                         "notes": entry.get("notes", "")})
+    plan["earlier_prints"] = seen[:3]
+    if seen and seen[0]["outcome"] != "good":
+        what = "this model" if seen[0]["same_model"] else "this filament preset"
+        plan["warnings"].append(f"The last recorded print with {what} ({seen[0]['date']}) was rated {seen[0]['outcome']}: "
+                                f"{seen[0]['notes'][:300]}")
+    elif seen:
+        what = "this model" if seen[0]["same_model"] else "this filament preset"
+        plan["rationale"].append(f"The last recorded print with {what} ({seen[0]['date']}) was rated good.")
 
 
 @mcp.tool()
@@ -265,6 +349,7 @@ def recommend_settings(
     bed_temp: int = 0,
     max_speed: int = 0,
     other_filaments: list[str] | None = None,
+    finish: str = "standard",
 ) -> dict:
     """Choose presets and settings for a print without slicing, with the reasoning for each choice.
 
@@ -286,11 +371,13 @@ def recommend_settings(
         bed_temp: Bed temperature in C from the spool's label, or 0 to use the preset.
         max_speed: Fastest print speed in mm/s the spool's label recommends, or 0 for no extra limit.
         other_filaments: Filaments in toolheads 2, 3 and 4, in order, for a multi-colour model.
+        finish: standard or smooth. Smooth uses at least fine layers and irons flat tops, for the smoothest
+            surfaces the printer gives. Use it when the user asks for a smooth or professional finish.
     """
     try:
         plan, analysis = _plan(model_path, filament, quality, strength, nozzle, supports, brim,
                                layer_height, precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed,
-                               other_filaments=other_filaments)
+                               other_filaments=other_filaments, finish=finish)
         return {"ok": True, "plan": plan, "model": analysis}
     except _ERRORS as exc:
         return _fail(exc)
@@ -318,6 +405,8 @@ def slice_model(
     bed_temp: int = 0,
     max_speed: int = 0,
     other_filaments: list[str] | None = None,
+    pause_before_z: float = 0,
+    finish: str = "standard",
 ) -> dict:
     """Slice a model for the Creator 5 with settings chosen for the filament and purpose.
 
@@ -328,7 +417,7 @@ def slice_model(
     A multi-colour 3MF keeps its objects, parts and toolhead assignments.
 
     Args:
-        model_path: Absolute path to an STL, 3MF or OBJ file on this computer.
+        model_path: Absolute path to an STL, 3MF, OBJ or STEP file on this computer.
         filament: Filament in toolhead 1 as the user describes it, e.g. "black PLA", "PETG", "TPU 95A",
             or the name of a saved spool.
         quality: draft, standard, fine or best.
@@ -350,6 +439,10 @@ def slice_model(
         bed_temp: Bed temperature in C from that label, or 0 to use the preset.
         max_speed: Fastest print speed in mm/s that label recommends, or 0 for no extra limit.
         other_filaments: Filaments in toolheads 2, 3 and 4, in order, for a multi-colour model.
+        pause_before_z: Pause the print before the layer whose top is at this height in mm, to embed a magnet,
+            nut or NFC tag. 0 for no pause. The layer below it is the last one printed before the pause.
+        finish: standard or smooth. Smooth uses at least fine layers and irons flat tops, for the smoothest
+            surfaces the printer gives. Use it when the user asks for a smooth or professional finish.
     """
     try:
         settings = load_settings()
@@ -360,32 +453,40 @@ def slice_model(
         if copies < 1:
             raise project.ProjectError("copies must be at least 1")
         notes: list[str] = []
-        loaded = model.load_objects(source)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        converted = holding = None
+        if source.suffix.lower() in model.CAD_SUFFIXES:
+            # Converted once; everything after this works from the mesh. It moves into the job folder once that is named.
+            holding = settings.output_dir / f"{stamp}_converting"
+            converted = model.convert_step(source, holding)
+            notes.append("The STEP file was converted to a mesh (0.01 mm tolerance).")
+        loaded = model.load_objects(converted or source)
         # A downloaded file is often named by a hash; the name its designer gave the part reads better.
         title = loaded["objects"][0]["name"] if source.suffix.lower() == ".3mf" else source.stem
-        stamp = time.strftime("%Y%m%d_%H%M%S")
         name = re.sub(r"[^A-Za-z0-9._-]+", "_", job_name or title).strip("_") or "print"
         job_dir = settings.output_dir / f"{stamp}_{name}"
         job_dir.mkdir(parents=True, exist_ok=True)
+        if converted:
+            converted = converted.rename(job_dir / converted.name)
+            holding.rmdir()
 
         # Designer settings come from the original file; the shape from the file that will print.
-        shaped = source
+        shaped = converted or source
         several = len(loaded["objects"]) > 1 or len(loaded["objects"][0]["parts"]) > 1
         if auto_orient and several:
             notes.append("Orientation left as designed: turning a model of several parts would merge them into one.")
         elif auto_orient:
-            shaped = slicer.orient(settings, source, job_dir, name)
+            shaped = slicer.orient(settings, shaped, job_dir, name)
             notes.append("The slicer chose the orientation; the project and the G-code both use it.")
         plan, analysis = _plan(str(source), filament, quality, strength, nozzle, supports, brim, layer_height,
                                precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed, shape_path=shaped,
-                               other_filaments=other_filaments)
+                               other_filaments=other_filaments, finish=finish)
         made = project.write_project(profiles_dir, shaped, plan, job_dir / f"{name}.3mf", copies,
-                                     process_overrides, filament_overrides)
+                                     process_overrides, filament_overrides, pause_before_z=pause_before_z)
         result = slicer.slice_project(settings, Path(made["project"]), job_dir)
         result["notes"] = notes + result["notes"]
-        chosen = {**plan["process_overrides"], **(process_overrides or {}), **(filament_overrides or {})}
-        for slot in plan["filaments"]:
-            chosen.update(slot["overrides"])
+        chosen = {**plan["process_overrides"], **(process_overrides or {}), **(filament_overrides or {}),
+                  **plan["filaments"][0]["overrides"]}
         expected = {k: made["settings"][k] for k in chosen}
         mismatched = slicer.check_settings(Path(result["gcode"]), expected)
         if mismatched:
@@ -394,6 +495,24 @@ def slice_model(
             plan["warnings"].append(
                 "These override keys are not in the base preset and may be misspelt: "
                 + ", ".join(made["unknown_override_keys"]))
+        paused_at = slicer.pauses(Path(result["gcode"]))
+        if pause_before_z:
+            if not made["settings"].get("machine_pause_gcode"):
+                plan["warnings"].append("The printer preset has no pause command, so the pause will do nothing.")
+            if [round(z, 3) for z in paused_at] != [round(pause_before_z, 3)]:
+                plan["warnings"].append(f"A pause before {pause_before_z:g} mm was asked for, but the G-code pauses at "
+                                        f"{paused_at or 'no height'}. Pick a height that is the top of a layer.")
+            else:
+                result["notes"].append(f"The print pauses before the layer at {pause_before_z:g} mm, with the last layer printed "
+                                       f"ending {made['settings'].get('layer_height')} mm below. Resume from the printer when ready.")
+        # One bed, one temperature: the slicer heats it to the highest any toolhead asks for.
+        beds = [float(v) for v in made["settings"].get("textured_plate_temp", [])]
+        if beds and max(beds) - min(beds) >= 10:
+            cool = [str(i + 1) for i, v in enumerate(beds) if max(beds) - v >= 10]
+            plan["warnings"].append(
+                f"The bed will run at {max(beds):g} C, the highest any toolhead asks for ({', '.join(f'{v:g}' for v in beds)} C by toolhead). "
+                f"That is too hot for the filament in toolhead {' and '.join(cool)}, which may soften and lose its shape near the bed. "
+                "Use filaments that want a similar bed temperature, or pass bed_temp to choose one.")
         # The setting says what was asked for; the G-code says what will print.
         supports_printed = slicer.support_sections(Path(result["gcode"]))
         supports_on = made["settings"].get("enable_support") == "1"
@@ -404,10 +523,35 @@ def slice_model(
                 f"Supports are off, but {analysis['overhang_area_mm2']:g} mm² of the underside is flatter than "
                 f"{analysis['support_angle']:g} degrees and will print over thin air. Turn supports on unless that is intended.")
         return {"ok": True, "project_3mf": made["project"], **result, "objects": made["objects"],
-                "supports_on": supports_on, "support_sections_in_gcode": supports_printed,
+                "supports_on": supports_on, "support_sections_in_gcode": supports_printed, "pauses_at_z": paused_at,
                 "settings_checked_in_gcode": len(expected) - len(mismatched), "settings_mismatched": mismatched,
                 "plan": plan, "model": analysis}
     except _ERRORS as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def check_flash_studio_slice(project_3mf: str) -> dict:
+    """Read what Flash Studio's own window sliced for a project, after the user pressed Slice plate there.
+
+    This is the proof of what will print: the nozzle temperature and preset of each toolhead, the bed
+    temperature, pauses, time and filament, and every changed setting that differs from the project.
+    Use it for multi-filament jobs, where Flash Studio may swap the filament in toolheads 2 to 4.
+    The window must still be open; nothing is sent to the printer.
+
+    Args:
+        project_3mf: The project_3mf path slice_model returned, as opened in Flash Studio.
+    """
+    try:
+        target = _path(project_3mf)
+        gcode = slicer.studio_gcode(target)
+        if gcode is None:
+            return {"ok": False, "error": "Flash Studio has not sliced this project yet, or its window was closed. "
+                                          "Open the project, press Slice plate, leave the window open, then ask again."}
+        with zipfile.ZipFile(target) as archive:
+            asked = json.loads(archive.read("Metadata/project_settings.config"))
+        return {"ok": True, **slicer.studio_report(gcode, asked)}
+    except _ERRORS + (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
         return _fail(exc)
 
 

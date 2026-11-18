@@ -23,7 +23,8 @@ def profiles_dir(tmp_path: Path) -> Path:
     ff, lib = root / "Flashforge", root / "OrcaFilamentLibrary"
     _write(ff / "machine", {"type": "machine", "name": "fdm_machine_common", "printable_height": "256", "nozzle_diameter": ["0.4"] * 4})
     _write(ff / "machine", {"type": "machine", "name": "Flashforge Creator 5 0.4 nozzle", "inherits": "fdm_machine_common",
-                            "instantiation": "true", "printer_model": "Flashforge Creator 5"})
+                            "instantiation": "true", "printer_model": "Flashforge Creator 5",
+                            "machine_pause_gcode": "M25"})
     _write(ff / "process", {"type": "process", "name": "fdm_process_common", "wall_loops": "2", "line_width": "0.42",
                             "sparse_infill_density": "15%", "sparse_infill_pattern": "grid", "outer_wall_speed": "200",
                             "inner_wall_speed": "300", "enable_support": "0", "brim_type": "no_brim", "brim_width": "5",
@@ -71,6 +72,60 @@ def box_triangles(sx: float, sy: float, sz: float, z0: float = 0.0) -> list:
     v = [(x, y, z) for z in (z0, z0 + sz) for y in (0, sy) for x in (0, sx)]
     quads = [(0, 2, 3, 1), (4, 5, 7, 6), (0, 1, 5, 4), (2, 6, 7, 3), (0, 4, 6, 2), (1, 3, 7, 5)]
     return [t for a, b, c, d in quads for t in ((v[a], v[b], v[c]), (v[a], v[c], v[d]))]
+
+
+def write_step_box(path: Path, sx: float, sy: float, sz: float) -> Path:
+    """A minimal AP214 STEP file holding one solid box, as a CAD program would export it."""
+    import itertools
+    count = [0]; lines = []
+    def e(text):
+        count[0] += 1; lines.append(f"#{count[0]}={text};"); return f"#{count[0]}"
+    pt = lambda p: e(f"CARTESIAN_POINT('',({p[0]:.4f},{p[1]:.4f},{p[2]:.4f}))")
+    dr = lambda d: e(f"DIRECTION('',({d[0]:.1f},{d[1]:.1f},{d[2]:.1f}))")
+    corners = {c: (c[0] * sx, c[1] * sy, c[2] * sz) for c in itertools.product((0, 1), repeat=3)}
+    vert = {c: e(f"VERTEX_POINT('',{pt(p)})") for c, p in corners.items()}
+    edges = {}
+    def edge(a, b):
+        key = (a, b) if a < b else (b, a)
+        if key not in edges:
+            d = tuple(float(key[1][i] - key[0][i]) for i in range(3))
+            vector = e(f"VECTOR('',{dr(d)},1.0)")
+            line = e(f"LINE('',{pt(corners[key[0]])},{vector})")
+            edges[key] = e(f"EDGE_CURVE('',{vert[key[0]]},{vert[key[1]]},{line},.T.)")
+        return edges[key], ".T." if (a, b) == key else ".F."
+    faces = []
+    for axis, side in itertools.product(range(3), (0, 1)):
+        u, v = [(1, 2), (2, 0), (0, 1)][axis]
+        def c(i, j):
+            t = [0, 0, 0]; t[axis] = side; t[u] = i; t[v] = j; return tuple(t)
+        loop = [c(0, 0), c(1, 0), c(1, 1), c(0, 1)]
+        if side == 0:
+            loop.reverse()
+        oriented = [e("ORIENTED_EDGE('',*,*,%s,%s)" % edge(loop[k], loop[(k + 1) % 4])) for k in range(4)]
+        edge_loop = e(f"EDGE_LOOP('',({','.join(oriented)}))")
+        bound = e(f"FACE_OUTER_BOUND('',{edge_loop},.T.)")
+        normal = [0.0, 0.0, 0.0]; normal[axis] = 1.0 if side else -1.0
+        ref = [0.0, 0.0, 0.0]; ref[u] = 1.0
+        placement = e(f"AXIS2_PLACEMENT_3D('',{pt(corners[c(0, 0)])},{dr(normal)},{dr(ref)})")
+        faces.append(e(f"ADVANCED_FACE('',({bound}),{e(f'PLANE({chr(39)}{chr(39)},{placement})')},.T.)"))
+    shell = e(f"CLOSED_SHELL('',({','.join(faces)}))")
+    solid = e(f"MANIFOLD_SOLID_BREP('box',{shell})")
+    app = e("APPLICATION_CONTEXT('automotive design')")
+    e(f"APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,{app})")
+    product = e(f"PRODUCT('box','box','',({e(f'PRODUCT_CONTEXT({chr(39)}{chr(39)},{app},{chr(39)}mechanical{chr(39)})')}))")
+    formation = e(f"PRODUCT_DEFINITION_FORMATION('','',{product})")
+    context = e(f"PRODUCT_DEFINITION_CONTEXT('part definition',{app},'design')")
+    shape = e(f"PRODUCT_DEFINITION_SHAPE('','',{e(f'PRODUCT_DEFINITION({chr(39)}design{chr(39)},{chr(39)}{chr(39)},{formation},{context})')})")
+    lu = e("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))")
+    au = e("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))")
+    su = e("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())")
+    unc = e(f"UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),{lu},'distance_accuracy_value','')")
+    ctx = e(f"(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT(({unc}))GLOBAL_UNIT_ASSIGNED_CONTEXT(({lu},{au},{su}))REPRESENTATION_CONTEXT('',''))")
+    origin = e(f"AXIS2_PLACEMENT_3D('',{pt((0, 0, 0))},{dr((0, 0, 1))},{dr((1, 0, 0))})")
+    e(f"SHAPE_DEFINITION_REPRESENTATION({shape},{e(f'ADVANCED_BREP_SHAPE_REPRESENTATION({chr(39)}{chr(39)},({origin},{solid}),{ctx})')})")
+    path.write_text("ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nFILE_NAME('box.step','2026-11-15T00:00:00',(''),(''),'','','');\n"
+                    "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n" + "\n".join(lines) + "\nENDSEC;\nEND-ISO-10303-21;\n")
+    return path
 
 
 @pytest.fixture
@@ -140,6 +195,26 @@ def colour_3mf(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def labelled_3mf(tmp_path: Path) -> Path:
+    """A CAD export: a body and an inlay as two build items, toolheads named only in part numbers."""
+    import zipfile
+    core = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
+    def mesh(oid, triangles):
+        verts = [v for tri in triangles for v in tri]
+        vx = "".join(f'<vertex x="{x}" y="{y}" z="{z}"/>' for x, y, z in verts)
+        tx = "".join(f'<triangle v1="{3*i}" v2="{3*i+1}" v3="{3*i+2}"/>' for i in range(len(triangles)))
+        return f'<object id="{oid}" name="geometry_{oid - 1}" type="model"><mesh><vertices>{vx}</vertices><triangles>{tx}</triangles></mesh></object>'
+    inlay = [[(x + 10, y + 10, z) for x, y, z in tri] for tri in box_triangles(10, 10, 0.6)]
+    root = (f'<model unit="millimeter" xmlns="{core}"><resources>' + mesh(1, box_triangles(30, 40, 4)) + mesh(2, inlay)
+            + '</resources><build><item objectid="1" partnumber="Body_White_Extruder1"/>'
+            '<item objectid="2" partnumber="Logo_Black_Extruder2"/></build></model>')
+    path = tmp_path / "KeyTag_TwoColour.3mf"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("3D/3dmodel.model", root)
+    return path
+
+
+@pytest.fixture
 def mushroom_3mf(tmp_path: Path) -> Path:
     stem = [[(x + 20, y + 20, z) for x, y, z in tri] for tri in box_triangles(5, 5, 40)]
     return make_3mf(tmp_path / "mushroom.3mf", stem + box_triangles(45, 45, 5, z0=40))
@@ -167,11 +242,19 @@ with zipfile.ZipFile(args[-1]) as z:
     process = json.loads(z.read("Metadata/project_settings.config"))
 if process.get("wall_loops") == "99":
     sys.stderr.write("simulated failure\n"); sys.exit(3)
+if process.get("wall_loops") == "95":          # settings file rejected: the real slicer carries on with defaults
+    print("[error]   load_from_json: parse _temp_3.config error, invalid json array for x")
 if process.get("wall_loops") == "96":          # a setting the slicer did not honour
     process["wall_loops"] = "2"
 block = "".join(f"; {k} = {','.join(v) if isinstance(v, list) else v}\n" for k, v in process.items())
+pause = ""
+with zipfile.ZipFile(args[-1]) as z:
+    if "Metadata/custom_gcode_per_layer.xml" in z.namelist():
+        import re
+        top = re.search(r'top_z="([0-9.]+)"', z.read("Metadata/custom_gcode_per_layer.xml").decode()).group(1)
+        pause = f";LAYER_CHANGE\n;Z:{top}\n;PAUSE_PRINT\nM25\n"
 body = ("; HEADER_BLOCK_START\n; total estimated time: 1h 23m 45s\n; total layer number: 180\n; HEADER_BLOCK_END\n"
-        "; CONFIG_BLOCK_START\n" + block + "; CONFIG_BLOCK_END\nG1 X0\n"
+        "; CONFIG_BLOCK_START\n" + block + "; CONFIG_BLOCK_END\nG1 X0\n" + pause +
         "; filament used [mm] = 5000.5\n; filament used [g] = 15.25\n")
 if process.get("wall_loops") == "98":          # killed part-way through writing
     (out / "plate_1.gcode").write_text(body[:60]); sys.exit(-11)
