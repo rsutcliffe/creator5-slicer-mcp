@@ -45,6 +45,66 @@ _RELS = ('<?xml version="1.0" encoding="UTF-8"?>\n'
          '</Relationships>\n')
 
 
+# Process settings Flash Studio accepts on an object (PrintObjectConfig and PrintRegionConfig in
+# FlashForge/Orca-Flashforge, src/libslic3r/PrintConfig.hpp). Changed ones are written on every object as
+# well as on the process preset: about a second after a new window loads a project, Flash Studio signs in,
+# loads the user's saved presets and, when one of them sorts ahead of the chosen process preset, selects
+# that preset again, which discards every change made to it (seen 20 Nov 2026: supports, walls and infill
+# all back to stock). Settings on an object are part of the model and survive.
+OBJECT_SETTINGS = frozenset("""
+adaptive_layer_height alternate_extra_wall bottom_shell_layers bottom_shell_thickness
+bottom_solid_infill_flow_ratio bottom_surface_pattern bridge_acceleration bridge_angle bridge_density
+bridge_flow bridge_no_support bridge_speed brim_ears_detection_length brim_ears_max_angle brim_object_gap
+brim_type brim_width counterbore_hole_bridging default_acceleration default_jerk
+detect_narrow_internal_solid_infill detect_overhang_wall detect_thin_wall dont_filter_internal_bridges
+elefant_foot_compensation elefant_foot_compensation_layers enable_extra_bridge_layer enable_overhang_speed
+enable_support enforce_support_layers ensure_vertical_shell_thickness extra_perimeters_on_overhangs
+filter_out_gap_fill flush_into_infill flush_into_objects flush_into_support fuzzy_skin fuzzy_skin_first_layer
+fuzzy_skin_noise_type fuzzy_skin_octaves fuzzy_skin_persistence fuzzy_skin_point_distance fuzzy_skin_scale
+fuzzy_skin_thickness gap_fill_target gap_infill_speed hole_to_polyhole hole_to_polyhole_threshold
+hole_to_polyhole_twisted independent_support_layer_height infill_anchor infill_anchor_max infill_combination
+infill_combination_max_layer_height infill_direction infill_jerk infill_wall_overlap initial_layer_acceleration
+initial_layer_jerk initial_layer_min_bead_width inner_wall_acceleration inner_wall_jerk inner_wall_line_width
+inner_wall_speed interface_shells interlocking_beam interlocking_beam_layer_count interlocking_beam_width
+interlocking_boundary_avoidance interlocking_depth interlocking_orientation internal_bridge_angle
+internal_bridge_density internal_bridge_flow internal_bridge_speed internal_solid_infill_acceleration
+internal_solid_infill_line_width internal_solid_infill_pattern internal_solid_infill_speed ironing_angle
+ironing_direction ironing_flow ironing_inset ironing_pattern ironing_spacing ironing_speed ironing_type
+is_infill_first lattice_angle_1 lattice_angle_2 layer_height line_width make_overhang_printable
+make_overhang_printable_angle make_overhang_printable_hole_size max_bridge_length min_bead_width
+min_feature_size min_length_factor min_width_top_surface minimum_sparse_infill_area
+mmu_segmented_region_interlocking_depth mmu_segmented_region_max_width only_one_wall_first_layer
+only_one_wall_top outer_wall_acceleration outer_wall_jerk outer_wall_line_width outer_wall_speed
+overhang_1_4_speed overhang_2_4_speed overhang_3_4_speed overhang_4_4_speed overhang_reverse
+overhang_reverse_internal_only overhang_reverse_threshold overhang_speed_classic precise_outer_wall
+precise_z_height print_flow_ratio raft_contact_distance raft_expansion raft_first_layer_density
+raft_first_layer_expansion raft_layers role_based_wipe_speed rotate_solid_infill_direction scarf_angle_threshold
+scarf_joint_flow_ratio scarf_joint_speed scarf_overhang_threshold seam_gap seam_position seam_slope_conditional
+seam_slope_entire_loop seam_slope_inner_walls seam_slope_min_length seam_slope_start_height seam_slope_steps
+seam_slope_type skirt_start_angle slice_closing_radius slicing_mode slowdown_for_curled_perimeters
+small_area_infill_flow_compensation small_perimeter_speed small_perimeter_threshold solid_infill_direction
+solid_infill_filament sparse_infill_acceleration sparse_infill_density sparse_infill_filament
+sparse_infill_line_width sparse_infill_pattern sparse_infill_speed staggered_inner_seams support_angle
+support_base_pattern support_base_pattern_spacing support_bottom_interface_spacing support_bottom_z_distance
+support_critical_regions_only support_expansion support_filament support_interface_bottom_layers
+support_interface_filament support_interface_loop_pattern support_interface_not_for_body
+support_interface_pattern support_interface_spacing support_interface_speed support_interface_top_layers
+support_line_width support_object_first_layer_gap support_object_xy_distance support_on_build_plate_only
+support_remove_small_overhang support_speed support_style support_threshold_angle support_threshold_overlap
+support_top_z_distance support_type thick_bridges thick_internal_bridges top_bottom_infill_wall_overlap
+top_shell_layers top_shell_thickness top_solid_infill_flow_ratio top_surface_acceleration top_surface_jerk
+top_surface_line_width top_surface_pattern top_surface_speed travel_acceleration travel_jerk
+tree_support_adaptive_layer_height tree_support_angle_slow tree_support_auto_brim tree_support_branch_angle
+tree_support_branch_angle_organic tree_support_branch_diameter tree_support_branch_diameter_angle
+tree_support_branch_diameter_organic tree_support_branch_distance tree_support_branch_distance_organic
+tree_support_brim_width tree_support_tip_diameter tree_support_top_rate tree_support_wall_count wall_direction
+wall_distribution_count wall_filament wall_generator wall_infill_order wall_loops wall_sequence
+wall_transition_angle wall_transition_filter_deviation wall_transition_length wipe_before_external_loop
+wipe_on_loops wipe_speed xy_contour_compensation xy_hole_compensation
+""".split())
+# Changed process settings that only exist on the preset, and that the reset would not alter in practice.
+_RESET_HARMLESS = {"enable_prime_tower"}   # the preset turns it on; with one filament no tower is printed anyway
+
 class ProjectError(RuntimeError):
     pass
 
@@ -159,14 +219,17 @@ def _layout(objects: list[dict], copies: int) -> tuple[np.ndarray, np.ndarray, l
     return np.array([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]]), size, positions
 
 
-def _documents(title: str, objects: list[dict], copies: int, toolheads: int) -> tuple[str, str, np.ndarray]:
+def _documents(title: str, objects: list[dict], copies: int, toolheads: int,
+               object_settings: dict | None = None) -> tuple[str, str, np.ndarray]:
     """3D/3dmodel.model and Metadata/model_settings.config, as Flash Studio reads them.
 
     Each object is a parent whose components are its parts; model_settings.config gives every
     object and part its name and toolhead (_BBS_3MF_Importer matches a <part id> to the
-    component's object id).
+    component's object id). object_settings are written on every object, as the slicer's own
+    per-object settings are.
     """
     offset, size, positions = _layout(objects, copies)
+    per_object = "".join(f'    <metadata key="{_xml(k)}" value="{_xml(str(v))}"/>\n' for k, v in sorted((object_settings or {}).items()))
     model = ['<?xml version="1.0" encoding="UTF-8"?>\n',
              '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" '
              'xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06" xmlns:BambuStudio="http://schemas.bambulab.com/package/2021">\n',
@@ -207,7 +270,7 @@ def _documents(title: str, objects: list[dict], copies: int, toolheads: int) -> 
         model.append('   </components>\n  </object>\n')
         first = min(obj["parts"][0]["extruder"] or 1, toolheads)
         config.append(f'  <object id="{next_id}">\n    <metadata key="name" value="{_xml(obj["name"])}"/>\n'
-                      f'    <metadata key="extruder" value="{first}"/>\n' + "".join(part_config) + '  </object>\n')
+                      f'    <metadata key="extruder" value="{first}"/>\n' + per_object + "".join(part_config) + '  </object>\n')
         build += [f'  <item objectid="{next_id}" transform="1 0 0 0 1 0 0 0 1 {x:.4f} {y:.4f} 0" printable="1"/>\n' for x, y in positions]
         next_id += 1
     model.append(' </resources>\n <build>\n')
@@ -233,7 +296,9 @@ def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Pa
         raise ProjectError(str(exc)) from exc
     settings, unknown = project_settings(profiles_dir, plan, extra_process, extra_filament, colour)
     title = loaded["objects"][0]["name"]
-    model_xml, config_xml, size = _documents(title, loaded["objects"], copies, len(settings["filament_settings_id"]))
+    changed_process = [k for k in settings["different_settings_to_system"][0].split(";") if k]
+    on_objects = {k: settings[k] for k in changed_process if k in OBJECT_SETTINGS and isinstance(settings[k], str)}
+    model_xml, config_xml, size = _documents(title, loaded["objects"], copies, len(settings["filament_settings_id"]), on_objects)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", _CONTENT_TYPES)
@@ -257,5 +322,6 @@ def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Pa
         "changed_process_settings": settings["different_settings_to_system"][0].split(";"),
         "changed_filament_settings": [k for k in settings["different_settings_to_system"][1].split(";") if k],
         "unknown_override_keys": unknown,
+        "preset_only_process_settings": [k for k in changed_process if k not in on_objects and k not in _RESET_HARMLESS],
         "settings": settings,
     }

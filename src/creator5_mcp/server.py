@@ -495,6 +495,10 @@ def slice_model(
             plan["warnings"].append(
                 "These override keys are not in the base preset and may be misspelt: "
                 + ", ".join(made["unknown_override_keys"]))
+        if made["preset_only_process_settings"]:
+            plan["warnings"].append(
+                "Flash Studio can reset these to the preset's values when it signs in after opening the project; "
+                "check them under Process, Global before printing: " + ", ".join(made["preset_only_process_settings"]))
         paused_at = slicer.pauses(Path(result["gcode"]))
         if pause_before_z:
             if not made["settings"].get("machine_pause_gcode"):

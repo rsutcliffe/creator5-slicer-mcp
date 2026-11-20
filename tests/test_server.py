@@ -44,6 +44,21 @@ def test_overrides_apply_last_and_unknown_keys_are_flagged(fake_env, cube_stl):
     assert any("wal_loops" in w for w in result["plan"]["warnings"])
 
 
+def test_process_changes_are_also_written_on_the_object(fake_env, cube_stl):
+    # Flash Studio's sign-in can select the process preset again and drop its changes; an object's own settings stay.
+    import zipfile
+    result = server.slice_model(str(cube_stl), "PETG", strength="functional", supports="on",
+                                process_overrides={"initial_layer_speed": 20})
+    assert result["ok"], result
+    with zipfile.ZipFile(result["project_3mf"]) as archive:
+        config = archive.read("Metadata/model_settings.config").decode()
+    assert '<metadata key="wall_loops" value="4"/>' in config and '<metadata key="enable_support" value="1"/>' in config
+    # Settings that exist only on the preset stay there, and the user is told to check them.
+    assert "initial_layer_speed" not in config and "enable_prime_tower" not in config
+    reset = [w for w in result["plan"]["warnings"] if "signs in" in w]
+    assert len(reset) == 1 and "initial_layer_speed" in reset[0] and "enable_prime_tower" not in reset[0]
+
+
 def test_label_figures_reach_the_slicer(fake_env, cube_stl):
     result = server.slice_model(str(cube_stl), "Creality Ender PLA", bed_temp=50)
     settings = _project_settings(result)
