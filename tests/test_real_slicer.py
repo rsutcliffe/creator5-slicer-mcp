@@ -183,3 +183,23 @@ def test_the_first_layer_picture_shows_the_brim_flash_studio_printed(real_env):
     # The last layer is at the post's full height.
     top = slicer.layer_moves(Path(result["gcode"]), layer=result["summary"]["layers"])
     assert top["z"] == pytest.approx(30, abs=0.1) and top["moves"]      # a 0.25 mm first layer, then 0.2 mm ones
+
+
+def test_a_leg_that_starts_in_mid_air_is_found_in_flash_studios_gcode(real_env):
+    from conftest import _stl
+    from creator5_mcp import server
+    shift = lambda tris, dx: [[(x + dx, y, z) for x, y, z in tri] for tri in tris]
+    # Two legs on the bed, a bar across their tops, and a short middle leg hanging from the bar, 10 mm above the bed.
+    shape = (box_triangles(6, 10, 20) + shift(box_triangles(6, 10, 20), 30) + box_triangles(36, 10, 4, z0=20)
+             + shift(box_triangles(6, 10, 10, z0=10), 15))
+    bare = server.slice_model(str(_stl(real_env / "hanging.stl", shape)), "PLA", supports="off")
+    assert bare["ok"] and bare["sliced_check"]["checked"], bare
+    starts = bare["sliced_check"]["mid_air"]
+    assert len(starts) == 1 and starts[0]["z"] == pytest.approx(10.2, abs=0.25) and starts[0]["object"] == "hanging", starts
+    assert 30 < starts[0]["area_mm2"] < 70                                  # the 6 x 10 mm foot of the leg
+    assert any(w.startswith("Sliced check: 'hanging' has") and "mid-air" in w for w in bare["plan"]["warnings"])
+    assert bare["sliced_check"]["smaller"] == [] and bare["sliced_check"]["left_out"] == []
+    # With supports, the same leg stands on them.
+    propped = server.slice_model(str(real_env / "hanging.stl"), "PLA", supports="on")
+    assert propped["ok"] and propped["support_sections_in_gcode"] > 0
+    assert propped["sliced_check"]["mid_air"] == [] and not any("Sliced check" in w for w in propped["plan"]["warnings"])
