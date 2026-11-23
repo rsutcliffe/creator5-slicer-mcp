@@ -9,7 +9,7 @@ description = "MCP server that slices models for the Flashforge Creator 5 with O
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
-dependencies = ["mcp>=1.2", "numpy>=1.24"]
+dependencies = ["mcp>=1.2", "numpy>=1.24", "pillow>=10"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

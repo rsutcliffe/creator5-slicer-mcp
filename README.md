@@ -85,6 +85,7 @@ python3 -m venv .venv
 | `record_print_result` | Records how a print came out, with its settings and anything changed by hand |
 | `compare_with_saved_project` | Shows what you changed in Flash Studio, against the project the server wrote |
 | `analyse_model` | Measures an STL, OBJ, 3MF or STEP: size, volume, bed contact, overhangs, parts, toolheads used, fit on the 256 mm bed, and the print check |
+| `preview` | Returns a picture: the plate with every part in its toolhead's colour, or one sliced layer from above |
 | `recommend_settings` | Returns the chosen presets and settings with reasons, without slicing |
 | `slice_model` | Analyses, chooses settings, writes the project, slices it, and confirms each setting reached the G-code |
 | `open_in_slicer` | Opens the project in a new Flash Studio window, ready for Slice and Print |
@@ -138,6 +139,12 @@ When a print is done, say how it went. `record_print_result` keeps the outcome w
 ```bash
 .venv/bin/python -m creator5_mcp.cli --record-result PROJECT.3mf --outcome good --notes clean walls, supports came off easily
 ```
+
+## Pictures of the result
+
+Every `slice_model` result has `plate_png` and `first_layer_png`: the plate as the project file holds it, each part in its toolhead's colour, and the first sliced layer from above with supports, brim and skirt drawn paler. The `preview` tool returns either picture to the chat, the plate from an angle or from above, and any layer by number or height.
+
+The plate is drawn from the project, so it shows what Flash Studio will open. A layer is drawn from the G-code, so it shows what will print. A model painted in fine detail is drawn in its part's colour, and the result says so.
 
 ## The print check
 
@@ -210,6 +217,8 @@ ORCA_TEST_PROFILES_DIR=/path/to/OrcaSlicer/resources/profiles pytest
 ## Licence and credits
 
 MIT. See [LICENSE](LICENSE).
+
+The pictures are drawn with code adapted from [unofficial-bambu-mcp](https://github.com/danielefinocchiaro/unofficial-bambu-mcp) (MIT); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 The print check runs text-to-cad's `cad` command as a separate program; it contains no text-to-cad code. text-to-cad is MIT-licensed.
 
