@@ -21,6 +21,20 @@ if [ ! -x .venv/bin/python ]; then python3 -m venv .venv || exit 1; fi
 .venv/bin/python -m pip install --quiet -e ".[step]" || exit 1
 echo "installed"
 
+step "Installing the print check (text-to-cad's cad command), with its usage stats and self-update off"
+if command -v uv >/dev/null 2>&1; then
+    if uv tool install cad >/dev/null 2>&1 || command -v cad >/dev/null 2>&1; then
+        PATH="$HOME/.local/bin:$PATH"
+        cad telemetry off >/dev/null 2>&1
+        cad update auto off >/dev/null 2>&1
+        cad --version
+    else
+        echo "(could not install cad; models are sliced without the print check)"
+    fi
+else
+    echo "(uv is not installed, so cad was skipped; models are sliced without the print check. Get uv with: brew install uv)"
+fi
+
 step "Checking the slicer by slicing a small cube to a file (nothing is sent to the printer)"
 if .venv/bin/python scripts/smoke_test.py; then
     SMOKE=ok
