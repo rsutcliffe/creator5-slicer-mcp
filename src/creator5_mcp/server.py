@@ -15,7 +15,7 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import __version__, model, profiles, project, recommend, results, slicer, spools
+from . import __version__, model, printcheck, profiles, project, recommend, results, slicer, spools
 from .config import ConfigError, load_settings
 
 mcp = FastMCP(
@@ -27,7 +27,9 @@ mcp = FastMCP(
         "writes a project file, slices that project to check it, and returns time and filament estimates. "
         "Then, without asking, call open_in_slicer with the project_3mf path so the user can press Slice "
         "and Print in Flash Studio. Pass auto_orient only when the user asks for it. Relay the returned "
-        "warnings to the user. If the user gives figures from the spool's label, pass them as "
+        "warnings to the user. Each result carries print_check: whether the shape will print, how it stands "
+        "against the best way up, and not_judged, what the file could not be measured for. Say what was not judged; "
+        "never call an unchecked part fine. If the user gives figures from the spool's label, pass them as "
         "nozzle_temp, bed_temp and max_speed, and offer to keep them with save_spool so the spool's name is "
         "enough next time. For a multi-colour model, pass the filaments in toolheads 2 to 4 as other_filaments. "
         "Use recommend_settings first when the user wants to review choices. For a job with more than one filament, "
@@ -87,6 +89,7 @@ def check_setup() -> dict:
         "slicer_path": str(settings.slicer_path) if settings.slicer_path else None,
         "profiles_dir": str(settings.profiles_dir) if settings.profiles_dir else None,
         "output_dir": str(settings.output_dir),
+        "print_check_tool": printcheck.version() or "not installed: shapes are sliced without the print check. " + printcheck.INSTALL,
     }
     if settings.slicer_path:
         report["slicer_version"] = slicer.version(settings)
@@ -202,7 +205,7 @@ def analyse_model(model_path: str) -> dict:
         model_path: Absolute path to the model file on this computer.
     """
     try:
-        return {"ok": True, **model.analyse(_path(model_path))}
+        return {"ok": True, **model.analyse(_path(model_path)), "print_check": printcheck.check(_path(model_path))}
     except _ERRORS as exc:
         return _fail(exc)
 
@@ -310,6 +313,13 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
     return plan, analysis
 
 
+def _print_check(target: Path, plan: dict, nozzle: str) -> dict:
+    """Check the shape that will print, with the plan's layer height and material, and add what it found to the plan's warnings."""
+    found = printcheck.check(target, float(nozzle), float(plan["layer_height_mm"]), plan["material"])
+    plan["warnings"] += [f"Print check: {text}" for text in found.get("errors", []) + found.get("warnings", [])]
+    return found
+
+
 def _earlier_prints(settings, plan: dict, objects: list[str]) -> None:
     """Add what the print log says about this filament preset or this model to the plan."""
     presets = {slot["preset"] for slot in plan["filaments"]}
@@ -378,7 +388,8 @@ def recommend_settings(
         plan, analysis = _plan(model_path, filament, quality, strength, nozzle, supports, brim,
                                layer_height, precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed,
                                other_filaments=other_filaments, finish=finish)
-        return {"ok": True, "plan": plan, "model": analysis}
+        check = _print_check(_path(model_path), plan, nozzle) if model_path else None
+        return {"ok": True, "plan": plan, "model": analysis, "print_check": check}
     except _ERRORS as exc:
         return _fail(exc)
 
@@ -481,6 +492,8 @@ def slice_model(
         plan, analysis = _plan(str(source), filament, quality, strength, nozzle, supports, brim, layer_height,
                                precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed, shape_path=shaped,
                                other_filaments=other_filaments, finish=finish)
+        # A STEP is checked as the STEP, which is exact; a turned copy is checked as it now stands.
+        check = _print_check(source if converted and shaped == converted else shaped, plan, nozzle)
         made = project.write_project(profiles_dir, shaped, plan, job_dir / f"{name}.3mf", copies,
                                      process_overrides, filament_overrides, pause_before_z=pause_before_z)
         result = slicer.slice_project(settings, Path(made["project"]), job_dir)
@@ -525,7 +538,7 @@ def slice_model(
         return {"ok": True, "project_3mf": made["project"], **result, "objects": made["objects"],
                 "supports_on": supports_on, "support_sections_in_gcode": supports_printed, "pauses_at_z": paused_at,
                 "settings_checked_in_gcode": len(expected) - len(mismatched), "settings_mismatched": mismatched,
-                "plan": plan, "model": analysis}
+                "plan": plan, "model": analysis, "print_check": check}
     except _ERRORS as exc:
         return _fail(exc)
 

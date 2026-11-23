@@ -1,5 +1,17 @@
-"""DualSense wall hook v1.3: sculpted, lofted from cross-sections. Prints with the back plate flat on the bed, no supports."""
-import math, numpy as np, trimesh
+# /// script
+# dependencies = ["numpy"]
+# ///
+"""DualSense wall hook v1.4: the v1.3 shape as an exact solid, written with build123d and exported as STEP.
+
+Prints with the back plate flat on the bed, no supports. Run it with text-to-cad's command, from this folder:
+    cad server start
+    cad run build_hook.py        (writes out/DualSenseWallHolder_v1.4.step and prints the checks)
+    cad server stop
+Change a dimension below and run it again. Give the STEP to slice_model.
+"""
+import math, numpy as np
+import build123d as bd
+from cad import step
 T=5.0            # back plate thickness
 PW, PH, PR, PRB = 36.0, 66.0, 16.0, 8.0   # plate half-width, height, top and bottom corner radii
 A=34.0           # arm half-width (68 mm, fits the ~80 mm flat between the grips)
@@ -49,40 +61,59 @@ def section(x, u):
     top=base+lip+fl
     bot=base-thick-fl
     return z,top,bot
-N=121; u=-np.cos(np.linspace(0,math.pi,N))
-xs=sorted(set(np.round(np.concatenate([[0,0.2,0.4],np.arange(T-1.2,T+1e-9,0.2),[T+0.02],np.arange(T+0.25,T+RF,0.25),
-    np.arange(T+RF,XR,2.0),np.arange(XR,X_END-1.0,0.25),np.arange(X_END-1.0,X_END+1e-9,0.2)]),4)))
-V=[];rings=[]
-for x in xs:
-    z,top,bot=section(x,u); start=len(V)
-    for j in range(N): V.append((z[j],top[j],x))
-    for j in range(N-1,-1,-1): V.append((z[j],bot[j],x))
-    rings.append(start)
-M=2*N; F=[]
-for a,b in zip(rings[:-1],rings[1:]):
-    for k in range(M):
-        k2=(k+1)%M; F+= [(a+k,b+k,b+k2),(a+k,b+k2,a+k2)]
-def cap(s,flip):
-    out=[]
-    for j in range(N-1):
-        t0,t1=s+j,s+j+1; b0,b1=s+M-1-j,s+M-2-j
-        out+= [(t0,t1,b1),(t0,b1,b0)]
-    return [f[::-1] for f in out] if flip else out
-F+=cap(rings[0],False)+cap(rings[-1],True)
-m=trimesh.Trimesh(np.array(V),np.array(F),process=True)
-m.update_faces(m.nondegenerate_faces()); m.remove_unreferenced_vertices(); trimesh.repair.fix_normals(m)
-print("watertight",m.is_watertight,"volume",m.is_volume,"faces",len(m.faces))
-m.apply_translation([0,-m.bounds[0][1],0])
-name="20261115_Personal_DualSenseWallHolder_v1.3"
-import os; os.makedirs("out",exist_ok=True); m.export(f"out/{name}.stl")
-print("print-orientation bounds (width, height-on-wall, reach)",m.bounds.round(1).tolist(),"cm3",round(m.volume/1000,1),"solid g",round(m.volume/1000*1.24,1),"reach",round(X_END,1))
-import sys; sys.path.insert(0,os.path.join(os.path.dirname(os.path.abspath(__file__)),"..","..","src"))
-from creator5_mcp import model; from pathlib import Path
-a=model.analyse(Path(f"out/{name}.stl")); print({k:a[k] for k in ("size_mm","bed_contact_area_mm2","overhang_area_mm2","overhang_fraction","height_to_footprint")})
-n=m.face_normals; ar=m.area_faces; zc=m.triangles[:,:,2].min(axis=1); bad=(n[:,2]<-0.7072)&(zc>0.3)
-print("faces steeper than 45 deg overhang: area mm2",round(float(ar[bad].sum()),1))
-# clearance to thumbsticks (cap centre 25.5 mm off centre, 16.7 mm above the body edge, radius 9.75; lowest point 6.95)
-print("lip height under stick zone |z|=16..36:",[round(profile_cap(z),1) for z in (16,20,25.5,30,34)])
-for h in (7,10,13):
-    hw=TAB_HW/math.pi*math.acos(2*h/TAB_H-1); c=25.5-math.sqrt(9.75**2-(h-16.7)**2); print(f"tongue half-width at {h} mm: {hw:.1f}; stick inner edge {c:.1f}; clearance {c-hw:.1f}")
-g=9.81*0.28; print("arm root stress MPa",round(6*g*0.045/((2*A/1000)*(TH/1000)**2)/1e6,2))
+N=61; u=-np.cos(np.linspace(0,math.pi,N))   # points across a section, closer together at the rounded ends
+ARM_X=sorted(set(np.round(np.concatenate([[T+0.02],np.arange(T+0.25,T+RF,0.25),np.arange(T+RF,XR,2.0),
+    np.arange(XR,X_END-1.0,0.25),np.arange(X_END-1.0,X_END+1e-9,0.2)]),4)))
+
+
+def arm_section(x, at):
+    """The arm's cross-section at distance x from the wall, as one closed curve placed at height `at`."""
+    z,top,bot=section(x,u)
+    ring=[(z[j],top[j],at) for j in range(N)]+[(z[j],bot[j],at) for j in range(N-1,-1,-1)]
+    points=[ring[0]]
+    for q in ring[1:]:
+        if math.dist(q,points[-1])>1e-4 and math.dist(q,points[0])>1e-4: points.append(q)   # the two sides meet at a tip
+    return bd.Face(bd.Wire([bd.Spline(*points,periodic=True)]))
+
+
+def plate():
+    """The back plate: a rounded outline, 16 mm corners at the top and 8 mm at the bottom, chamfered front and foot."""
+    face=bd.Rectangle(2*PW,PH,align=(bd.Align.CENTER,bd.Align.MIN))
+    face=bd.fillet(face.vertices().sort_by(bd.Axis.Y)[2:],PR)
+    face=bd.fillet(face.vertices().sort_by(bd.Axis.Y)[:2],PRB)
+    body=bd.extrude(face,T,dir=(0,0,1))
+    body=bd.chamfer(body.edges().group_by(bd.Axis.Z)[-1],1.2)     # front edge, where the hand meets it
+    return bd.chamfer(body.edges().group_by(bd.Axis.Z)[0],0.4)     # foot, against elephant's foot on the bed
+
+
+@step("out/DualSenseWallHolder_v1.4.step")
+def hook():
+    # The arm starts half a millimetre inside the plate, so the two join as one solid.
+    arm=bd.loft([arm_section(ARM_X[0],T-0.5)]+[arm_section(x,x) for x in ARM_X],ruled=True)
+    body=plate()+arm
+    assert len(body.solids())==1 and body.is_valid, "the plate and the arm did not join into one sound solid"
+    body.label="DualSenseWallHolder_v1.4"
+    return body
+
+
+def meshed_volume(shape):
+    """Volume in mm3, measured from a 0.02 mm mesh of the solid. The kernel's own `.volume` reads a third low
+    on the arm's ruled spline faces (29.8 cm3 against 48.8 from its sections), so it is not used."""
+    points,faces=shape.tessellate(0.02)
+    v=np.array([(q.X,q.Y,q.Z) for q in points]); f=np.array(faces)
+    return abs(float(np.einsum("ij,ij->i",v[f[:,0]],np.cross(v[f[:,1]],v[f[:,2]])).sum())/6)
+
+
+if __name__=="__main__":
+    made=hook()
+    box=made.shape.bounding_box(); size=[round(v,2) for v in (box.size.X,box.size.Y,box.size.Z)]
+    volume=meshed_volume(made.shape)
+    print("width, height on wall, reach (mm)",size,"cm3",round(volume/1000,1),"solid g in PLA",round(volume/1000*1.24,1))
+    # v1.3, the mesh this replaces: 72 x 66 x 78.33 mm, 71.76 cm3.
+    assert all(abs(a-b)<0.5 for a,b in zip(size,(72.0,66.0,78.33))), size
+    assert abs(volume/71756.8-1)<0.03, volume
+    # clearance to thumbsticks (cap centre 25.5 mm off centre, 16.7 mm above the body edge, radius 9.75; lowest point 6.95)
+    print("lip height under stick zone |z|=16..36:",[round(profile_cap(z),1) for z in (16,20,25.5,30,34)])
+    for h in (7,10,13):
+        hw=TAB_HW/math.pi*math.acos(2*h/TAB_H-1); c=25.5-math.sqrt(9.75**2-(h-16.7)**2); print(f"tongue half-width at {h} mm: {hw:.1f}; stick inner edge {c:.1f}; clearance {c-hw:.1f}")
+    g=9.81*0.28; print("arm root stress MPa",round(6*g*0.045/((2*A/1000)*(TH/1000)**2)/1e6,2))

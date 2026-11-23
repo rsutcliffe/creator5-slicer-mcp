@@ -460,3 +460,84 @@ def test_setup_reports_a_flash_studio_release_other_than_the_one_tested(fake_env
     report = server.check_setup()
     assert report["flash_studio_version"] == "9.9" and report["tested_with"] == slicer.TESTED_FLASH_STUDIO
     assert "Flash Studio is now 9.9" in report["warning"]
+
+
+FAKE_CAD = '''#!{python}
+import json, sys
+from pathlib import Path
+here = Path(__file__).parent
+args = sys.argv[1:]
+with open(here / "cad_calls.txt", "a") as log:
+    log.write(" ".join(args) + "\\n")
+if args[:2] == ["server", "start"]:
+    print("started the cad server (cad 0.11.17)"); sys.exit(0)
+if args[:2] == ["server", "stop"]:
+    sys.exit(0)
+if args[:2] == ["step", "export"]:
+    Path(args[3]).write_text("solid"); sys.exit(0)
+mode = (here / "cad_mode.txt").read_text()
+if mode == "not_running" or (mode == "slow_step" and args[0] == "step"):
+    print(json.dumps({{"ok": False, "error": "the cad server stopped", "reason": "not_running", "status": "not_checked"}})); sys.exit(3)
+way = lambda name, rank, support: {{"orientation": name, "rank": rank, "rotate": "bd.Rot(90, 0, 0)" if rank == 1 else "bd.Rot(0, 0, 0)",
+                                   "support_volume_mm3": support, "overhang_area_mm2": 1.0, "build_height_mm": 10.0, "bed_contact_mm2": 5.0}}
+if "--candidates" in args:
+    print(json.dumps({{"status": "ok", "findings": [], "measurements": {{"orientations": {{"candidates": [
+        way("rot_plus_90_x", 1, 200.0), way("current_plus_z", 2, 4200.0)]}}}}}}))
+    sys.exit(0)
+wall = {{"severity": "error", "code": "printing.wall_supported", "message": "supported wall thickness 0.5 mm is under the 0.8 mm minimum",
+        "location": "1, 2, 3", "hint": "thicken it to at least 0.8 mm", "source": "cad, its own figure"}}
+print(json.dumps({{"status": "failed" if mode == "failed" else "ok", "reason": None, "summary": "summary line",
+    "findings": ([wall, wall] if mode == "failed" else []) + [
+        {{"severity": "info", "code": "families_not_measured", "message": "pins, details are not measured on this source",
+          "location": "rules", "hint": "check the STEP", "source": None}},
+        {{"severity": "info", "code": "rules_general", "message": "general rules", "location": "rules", "hint": None, "source": None}}],
+    "measurements": {{}}}}))
+sys.exit(1 if mode == "failed" else 0)
+'''
+
+
+def test_print_check_reads_cads_result_and_never_calls_an_unchecked_part_fine(fake_env, cube_stl, monkeypatch):
+    from creator5_mcp import printcheck
+    # No cad command: the slice still works, and says the shape was not checked.
+    missing = server.slice_model(str(cube_stl), "PLA")
+    assert missing["ok"] and missing["print_check"]["checked"] is False and "uv tool install cad" in missing["print_check"]["reason"]
+    assert "not installed" in server.check_setup()["print_check_tool"]
+    cad = fake_env / "cad"
+    cad.write_text(FAKE_CAD.format(python=sys.executable))
+    cad.chmod(0o755)
+    monkeypatch.setattr(printcheck, "binary", lambda: str(cad))
+    (fake_env / "cad_mode.txt").write_text("failed")
+    result = server.slice_model(str(cube_stl), "silk PLA")
+    check = result["print_check"]
+    assert check["checked"] and check["status"] == "failed" and check["exact"] is False
+    assert check["errors"] == ["Supported wall thickness 0.5 mm is under the 0.8 mm minimum (2 places). Fix: thicken it to at least 0.8 mm. "
+                               "At x, y, z = 1, 2, 3 mm. Limit from: cad, its own figure."]
+    # What a mesh cannot be judged for is said, and the general-rules boilerplate is not.
+    assert len(check["not_judged"]) == 2 and "pins, details" in check["not_judged"][0].lower() and "sampling" in check["not_judged"][1]
+    # Another way up that saves 4 cm³ of support is worth a warning; both reach the plan the user is read.
+    assert check["orientation"]["best_is_as_it_stands"] is False
+    warnings = [w for w in result["plan"]["warnings"] if w.startswith("Print check: ")]
+    assert len(warnings) == 2 and "4.0 cm³ less support" in warnings[1] and "auto_orient" in warnings[1]
+    # The plan's layer height, the nozzle, the bed and the material go to cad, and the server it started is stopped.
+    calls = (fake_env / "cad_calls.txt").read_text().splitlines()
+    assert calls[0] == "server start" and calls[-1] == "server stop" and len(calls) == 4
+    assert f"--build-volume 256x256x256 --nozzle 0.4 --layer-height {result['plan']['layer_height_mm']:g} --json --material pla" in calls[1]
+    assert calls[1].startswith("stl dfm ") and "--material" not in calls[2]
+    # A check that did not run is not a pass, and adds no warning of its own.
+    (fake_env / "cad_mode.txt").write_text("not_running")
+    stopped = server.recommend_settings("PLA", str(cube_stl))
+    assert stopped["print_check"] == {"checked": False, "reason": "the cad server stopped"}
+    assert not any(w.startswith("Print check") for w in stopped["plan"]["warnings"])
+    assert server.analyse_model(str(fake_env / "nothing.obj"))["ok"] is False
+    # A STEP whose exact check does not finish is checked as a mesh of itself, and the result says which it was.
+    (fake_env / "cad_mode.txt").write_text("slow_step")
+    part = fake_env / "part.step"
+    part.write_text("ISO-10303-21;")
+    meshed = printcheck.check(part)
+    assert meshed["checked"] and meshed["exact"] is False and meshed["status"] == "ok"
+    assert any("exact check of the STEP did not finish (the cad server stopped)" in line for line in meshed["not_judged"])
+    calls = (fake_env / "cad_calls.txt").read_text().splitlines()
+    assert [c.split()[:2] for c in calls[-7:]] == [["server", "start"], ["step", "dfm"], ["server", "stop"], ["server", "start"],
+                                                   ["step", "export"], ["stl", "dfm"], ["stl", "dfm"]] or \
+           [c.split()[:2] for c in calls[-8:-1]] == [["server", "start"], ["step", "dfm"], ["server", "stop"], ["server", "start"],
+                                                     ["step", "export"], ["stl", "dfm"], ["stl", "dfm"]]

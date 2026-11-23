@@ -273,4 +273,6 @@ def fake_env(tmp_path: Path, profiles_dir: Path, monkeypatch) -> Path:
     monkeypatch.setenv("ORCA_SLICER_PATH", str(slicer))
     monkeypatch.setenv("ORCA_PROFILES_DIR", str(profiles_dir))
     monkeypatch.setenv("C5_OUTPUT_DIR", str(tmp_path / "out"))
+    # The print check is an outside tool: off here, tested with a recorded result and in test_real_slicer.py.
+    monkeypatch.setattr("creator5_mcp.printcheck.binary", lambda: None)
     return tmp_path

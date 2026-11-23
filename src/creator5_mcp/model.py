@@ -332,7 +332,7 @@ def thin_walls(tris: np.ndarray, limit: float, pairs: int = 40_000_000, gaps: bo
     twice = np.linalg.norm(cross, axis=1)
     upright = np.flatnonzero((twice > 1e-9) & (np.abs(cross[:, 2]) < 0.3 * twice))
     if not len(upright):
-        return {"area_mm2": 0.0, "thickness_mm": None, "lowest_z": None}
+        return {"area_mm2": 0.0, "thickness_mm": None, "lowest_z": None, "sampled": False}
     # shortcut: at most pairs ray-triangle tests, so a dense mesh is sampled evenly, not measured
     # in full; a patch of thin wall smaller than one sample step can be missed. Raise pairs to check more.
     step = max(1, math.ceil(len(upright) * len(tris) / pairs))
@@ -365,7 +365,7 @@ def thin_walls(tris: np.ndarray, limit: float, pairs: int = 40_000_000, gaps: bo
             foot = float(tris[i][:, 2].min())
             lowest = foot if lowest is None else min(lowest, foot)
     return {"area_mm2": round(thin_area, 1), "thickness_mm": round(float(np.median(found)), 2) if found else None,
-            "lowest_z": lowest}
+            "lowest_z": lowest, "sampled": step > 1}
 
 
 def designer_settings(path: Path) -> dict:
@@ -420,13 +420,14 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE, nozzle: fl
     overhang_area = float(area[overhang].sum())
     total_area = float(area.sum())
     footprint_min = float(min(size[0], size[1]))
-    fine, slots = [], []
+    fine, slots, sampled = [], [], False
     for obj in loaded["objects"]:
         for part in obj["parts"]:
             gap = thin_walls(part["tris"], nozzle, gaps=True)
             if gap["area_mm2"] / 2 >= THIN_WALL_MM2:        # a slot has two walls, and both were counted
                 slots.append({"part": part["name"], "width_mm": gap["thickness_mm"], "area_mm2": round(gap["area_mm2"] / 2, 1)})
             thin = thin_walls(part["tris"], 2 * nozzle)
+            sampled = sampled or gap["sampled"] or thin["sampled"]
             if thin["area_mm2"] >= THIN_WALL_MM2:
                 fine.append({"part": part["name"], "thickness_mm": thin["thickness_mm"], "area_mm2": thin["area_mm2"],
                              "on_first_layer": thin["lowest_z"] - float(lo[2]) < 0.3})
@@ -449,5 +450,7 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE, nozzle: fl
         "colours": loaded["colours"],
         "fine_detail": fine,
         "narrow_gaps": slots,
-        "notes": notes,
+        # What the wall search could not rule out, said in the result and not only in a code comment.
+        "notes": notes + (["Not judged: the mesh is dense, so its walls were sampled, not measured in full. "
+                           "A thin wall or narrow gap smaller than the sample spacing can be missed."] if sampled else []),
     }

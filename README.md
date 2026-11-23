@@ -84,7 +84,7 @@ python3 -m venv .venv
 | `save_spool` | Remembers a spool and its label figures under a name |
 | `record_print_result` | Records how a print came out, with its settings and anything changed by hand |
 | `compare_with_saved_project` | Shows what you changed in Flash Studio, against the project the server wrote |
-| `analyse_model` | Measures an STL, OBJ, 3MF or STEP: size, volume, bed contact, overhangs, parts, toolheads used, fit on the 256 mm bed |
+| `analyse_model` | Measures an STL, OBJ, 3MF or STEP: size, volume, bed contact, overhangs, parts, toolheads used, fit on the 256 mm bed, and the print check |
 | `recommend_settings` | Returns the chosen presets and settings with reasons, without slicing |
 | `slice_model` | Analyses, chooses settings, writes the project, slices it, and confirms each setting reached the G-code |
 | `open_in_slicer` | Opens the project in a new Flash Studio window, ready for Slice and Print |
@@ -138,6 +138,21 @@ When a print is done, say how it went. `record_print_result` keeps the outcome w
 ```bash
 .venv/bin/python -m creator5_mcp.cli --record-result PROJECT.3mf --outcome good --notes clean walls, supports came off easily
 ```
+
+## The print check
+
+`slice_model`, `recommend_settings` and `analyse_model` each return `print_check`: whether the shape will print on an FDM printer, before anything is sliced. It measures walls against two lines of the nozzle, overhangs and bridges, knife edges, holes, gaps and trapped volumes, and compares how the part stands with the other ways it could lie. Errors and warnings are added to the plan's warnings, each with the measured figure, the limit, where it is and whose limit it is.
+
+- `not_judged` lists what the file could not be measured for. A mesh (STL, 3MF) is sampled and holds no holes, pins or lettering to judge; a STEP is measured exactly (`exact` is true).
+- An exact check that takes longer than 60 seconds gives way to a check of a mesh of the same STEP, and the result says so.
+- A part that stands another way up with much less support gets a warning naming the rotation. Nothing is turned unless `auto_orient` is passed.
+- `checked: false` means nothing was judged, with the reason. It is never a pass. OBJ files are not checked.
+
+The check is the `cad` command from [text-to-cad](https://github.com/earthtojake/text-to-cad) (MIT), which `scripts/setup.sh` installs with `uv tool install cad` and sets to send no usage stats and not to update itself. Without it, models are sliced as before and `print_check` says the check was skipped. Its limits are general design-guide figures, not measurements from the Creator 5.
+
+## Models written as code
+
+`models/dualsense_hook/build_hook.py` is a part written with [build123d](https://github.com/gumyr/build123d): named dimensions at the top, an exact solid, a STEP file out. Change a number, run `cad run build_hook.py` in that folder (with `cad server start` before and `cad server stop` after), and give the STEP to `slice_model`.
 
 ## Pausing to embed something
 
@@ -195,5 +210,7 @@ ORCA_TEST_PROFILES_DIR=/path/to/OrcaSlicer/resources/profiles pytest
 ## Licence and credits
 
 MIT. See [LICENSE](LICENSE).
+
+The print check runs text-to-cad's `cad` command as a separate program; it contains no text-to-cad code. text-to-cad is MIT-licensed.
 
 This project runs OrcaSlicer as a separate program and reads the preset files installed with it; it contains no OrcaSlicer code. OrcaSlicer is developed by the OrcaSlicer contributors under AGPL-3.0. Flashforge and Creator 5 are trademarks of their owner. This project is independent and is not endorsed by either.

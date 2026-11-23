@@ -149,3 +149,19 @@ def test_fine_detail_is_printed_with_variable_width_walls(real_env):
     gcode = Path(result["gcode"]).read_text(errors="ignore")
     assert "; wall_generator = arachne" in gcode and "; initial_layer_speed = 20" in gcode
     assert result["summary"]["filament_used_g"] > 0          # the 0.6 mm fin does print, as one line
+
+
+def test_a_step_is_print_checked_exactly_by_the_real_cad_command(real_env):
+    pytest.importorskip("cascadio")
+    from conftest import write_step_box
+    from creator5_mcp import printcheck, server
+    if not printcheck.binary():
+        pytest.skip("the cad command is not installed")
+    # A 0.5 mm fin standing 20 mm tall: thinner than two lines of a 0.4 mm nozzle.
+    result = server.slice_model(str(write_step_box(real_env / "fin.step", 40, 0.5, 20)), "PLA")
+    assert result["ok"], result
+    check = result["print_check"]
+    assert check["checked"] and check["exact"] and check["status"] == "failed", check
+    assert any("wall thickness 0.5 mm" in e for e in check["errors"]), check
+    assert any(w.startswith("Print check: ") for w in result["plan"]["warnings"])
+    assert check["orientation"]["as_it_stands"]["build_height_mm"] == 20.0
