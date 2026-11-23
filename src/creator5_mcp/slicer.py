@@ -266,34 +266,31 @@ def pauses(gcode: Path) -> list[float]:
 _WORD = re.compile(r"([XYEIJ])(-?\d*\.?\d+)")
 
 
-def layer_moves(gcode: Path, layer: int = 1, z: float = 0) -> dict:
-    """The extruding moves of one layer: {"layer", "z", "moves": [(x0, y0, x1, y1, toolhead, feature)]}.
+def layers(gcode: Path):
+    """Every layer of the G-code in order, as (number, z, moves), read in one pass.
 
-    layer counts from 1. With z, the layer is the first whose top is at or above that height in mm.
-    toolhead counts from 0, as T0 to T3 do. feature is the slicer's own name for what is being printed
-    (Outer wall, Support, Brim). Arcs are stepped into short lines. Start-up moves before the first
-    layer, and the slicer's Custom sections, are left out.
+    number counts from 1 and z is the layer's top in mm. moves are the extruding moves,
+    (x0, y0, x1, y1, toolhead, feature): toolhead counts from 0, as T0 to T3 do, and feature is the
+    slicer's own name for what is being printed (Outer wall, Support, Brim). Arcs are stepped into
+    short lines. Start-up moves before the first layer, and the slicer's Custom sections, are left out.
     """
     x = y = e = 0.0
     tool, feature, relative = 0, "", True
     number, height, moves = 0, 0.0, []
-    wanted = False
     with gcode.open(errors="ignore") as handle:
         for line in handle:
             head = line[:2]
             if head == ";L" and line.startswith(";LAYER_CHANGE"):
-                if wanted:
-                    break
-                number += 1
-                wanted = bool(not z and number == layer)
+                if number:
+                    yield number, height, moves
+                number, moves = number + 1, []
             elif head == ";Z" and line.startswith(";Z:") and number:
                 height = float(line[3:])
-                wanted = wanted or bool(z and height >= z - 1e-6)
             elif head == ";T" and line.startswith(";TYPE:"):
                 feature = line[6:].strip()
             elif head[0] == "T" and line[1:2].isdigit():
                 tool = int(line[1:].split()[0].split(";")[0])
-            elif head in ("M8",) and line[:3] in ("M82", "M83"):
+            elif head == "M8" and line[:3] in ("M82", "M83"):
                 relative = line[:3] == "M83"
             elif head == "G9" and line.startswith("G92"):
                 words = dict(_WORD.findall(line.split(";")[0]))
@@ -304,7 +301,7 @@ def layer_moves(gcode: Path, layer: int = 1, z: float = 0) -> dict:
                 pushed = "E" in words and (float(words["E"]) > 0 if relative else float(words["E"]) > e)
                 if "E" in words and not relative:
                     e = float(words["E"])
-                if wanted and pushed and feature != "Custom" and (nx != x or ny != y):
+                if number and pushed and feature != "Custom" and (nx != x or ny != y):
                     points = [(x, y), (nx, ny)]
                     if head in ("G2", "G3") and ("I" in words or "J" in words):
                         cx, cy = x + float(words.get("I", 0)), y + float(words.get("J", 0))
@@ -316,10 +313,21 @@ def layer_moves(gcode: Path, layer: int = 1, z: float = 0) -> dict:
                                   for k in range(steps)] + [(nx, ny)]
                     moves += [(a[0], a[1], b[0], b[1], tool, feature) for a, b in zip(points, points[1:])]
                 x, y = nx, ny
-    if not wanted:
-        raise SliceError(f"The G-code has {number} layers, so there is no layer {layer}." if not z
-                         else f"The G-code ends at {height:g} mm, below {z:g} mm.")
-    return {"layer": number, "z": height, "moves": moves}
+    if number:
+        yield number, height, moves
+
+
+def layer_moves(gcode: Path, layer: int = 1, z: float = 0) -> dict:
+    """The extruding moves of one layer: {"layer", "z", "moves"}, as layers() gives them.
+
+    layer counts from 1. With z, the layer is the first whose top is at or above that height in mm.
+    """
+    number = height = 0
+    for number, height, moves in layers(gcode):
+        if (z and height >= z - 1e-6) or (not z and number == layer):
+            return {"layer": number, "z": height, "moves": moves}
+    raise SliceError(f"The G-code has {number} layers, so there is no layer {layer}." if not z
+                     else f"The G-code ends at {height:g} mm, below {z:g} mm.")
 
 
 def settings_in_gcode(gcode: Path) -> dict[str, str]:

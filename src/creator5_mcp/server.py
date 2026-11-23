@@ -15,7 +15,7 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP, Image
 
-from . import __version__, model, preview as pictures, printcheck, profiles, project, recommend, results, slicer, spools
+from . import __version__, model, preview as pictures, printcheck, profiles, project, recommend, results, slicecheck, slicer, spools
 from .config import ConfigError, load_settings
 
 mcp = FastMCP(
@@ -29,7 +29,8 @@ mcp = FastMCP(
         "and Print in Flash Studio. Pass auto_orient only when the user asks for it. Relay the returned "
         "warnings to the user. Each result carries print_check: whether the shape will print, how it stands "
         "against the best way up, and not_judged, what the file could not be measured for. Say what was not judged; "
-        "never call an unchecked part fine. slice_model also draws the plate (plate_png) and the first layer "
+        "never call an unchecked part fine. sliced_check compares the G-code with the model: anything that starts "
+        "printing in mid-air, an object left out, a part printed smaller than modelled. slice_model also draws the plate (plate_png) and the first layer "
         "(first_layer_png): show the plate picture with every result, by calling preview with the project_3mf path, "
         "and the first layer when supports, a brim or fine detail matter. If the user gives figures from the spool's label, pass them as "
         "nozzle_temp, bed_temp and max_speed, and offer to keep them with save_spool so the spool's name is "
@@ -542,12 +543,23 @@ def slice_model(
                 f"Supports are off, but {analysis['overhang_area_mm2']:g} mm² of the underside is flatter than "
                 f"{analysis['support_angle']:g} degrees and will print over thin air. Turn supports on unless that is intended.")
         drawn = _draw(Path(made["project"]), Path(result["gcode"]), job_dir, result["notes"])
+        sliced = _sliced(Path(made["project"]), Path(result["gcode"]), plan)
         return {"ok": True, "project_3mf": made["project"], **result, **drawn, "objects": made["objects"],
                 "supports_on": supports_on, "support_sections_in_gcode": supports_printed, "pauses_at_z": paused_at,
                 "settings_checked_in_gcode": len(expected) - len(mismatched), "settings_mismatched": mismatched,
-                "plan": plan, "model": analysis, "print_check": check}
+                "plan": plan, "model": analysis, "print_check": check, "sliced_check": sliced}
     except _ERRORS as exc:
         return _fail(exc)
+
+
+def _sliced(project: Path, gcode: Path, plan: dict) -> dict:
+    """Compare the G-code with the project and add what was found to the plan's warnings."""
+    try:
+        found = slicecheck.check(project, gcode)
+        plan["warnings"] += [f"Sliced check: {text}" for text in found["warnings"]]
+        return found
+    except Exception as exc:   # a check that cannot run is said, and the slice still stands
+        return {"checked": False, "reason": f"The sliced result could not be checked: {exc}"}
 
 
 def _layer_picture(project: Path, gcode: Path, layer: int = 1, z: float = 0) -> bytes:

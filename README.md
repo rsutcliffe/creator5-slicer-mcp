@@ -146,6 +146,17 @@ Every `slice_model` result has `plate_png` and `first_layer_png`: the plate as t
 
 The plate is drawn from the project, so it shows what Flash Studio will open. A layer is drawn from the G-code, so it shows what will print. A model painted in fine detail is drawn in its part's colour, and the result says so.
 
+## The sliced check
+
+`slice_model` also returns `sliced_check`, which compares the G-code with the model, from the toolpath and not the settings:
+
+- **Starts in mid-air:** plastic with nothing printed under it that joins nothing on its own layer, with the object, height and place. Overhangs and bridges are joined to the part, so they are left to the print check.
+- **Left out:** an object in the project that the G-code never prints.
+- **Printed smaller than modelled:** part of an object's outline, or of one toolhead's parts, has no line beside it. This catches a part printed by the wrong toolhead and detail the slicer dropped, down to about 0.3 mm.
+- **Stops short:** the last layer ends below the model's top.
+
+Findings join the plan's warnings as `Sliced check: ...`. A mesh that is open at a height cannot be compared, and `not_judged` says so.
+
 ## The print check
 
 `slice_model`, `recommend_settings` and `analyse_model` each return `print_check`: whether the shape will print on an FDM printer, before anything is sliced. It measures walls against two lines of the nozzle, overhangs and bridges, knife edges, holes, gaps and trapped volumes, and compares how the part stands with the other ways it could lie. Errors and warnings are added to the plan's warnings, each with the measured figure, the limit, where it is and whose limit it is.

@@ -276,4 +276,6 @@ def fake_env(tmp_path: Path, profiles_dir: Path, monkeypatch) -> Path:
     monkeypatch.setenv("C5_OUTPUT_DIR", str(tmp_path / "out"))
     # The print check is an outside tool: off here, tested with a recorded result and in test_real_slicer.py.
     monkeypatch.setattr("creator5_mcp.printcheck.binary", lambda: None)
+    # The fake slicer prints one fixed square, not the model, so the sliced-result check is off here too.
+    monkeypatch.setattr("creator5_mcp.server._sliced", lambda project, gcode, plan: {"checked": False, "reason": "off in tests"})
     return tmp_path

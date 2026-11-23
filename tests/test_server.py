@@ -636,3 +636,60 @@ def test_one_layer_is_read_from_gcode_with_arcs_toolheads_and_features(tmp_path)
     picture = _pixels(preview.layer_png(first["moves"], ["#C8102E", "#1F5AA6"], "layer 1"))
     assert ((picture[:, :, 0] > 225) & (picture[:, :, 1] > 140) & (picture[:, :, 1] < 200)).sum() > 50      # pale red brim
     assert ((picture[:, :, 2] > 150) & (picture[:, :, 0] < 60)).sum() > 200                                   # blue wall
+
+
+def _ring(x0, y0, x1, y1):
+    return f"G1 X{x0} Y{y0}\nG1 X{x1} Y{y0} E1\nG1 X{x1} Y{y1} E1\nG1 X{x0} Y{y1} E1\nG1 X{x0} Y{y0} E1\n"
+
+
+def _gcode(path, layers):
+    """layers: for each layer, a list of (feature, toolhead, text)."""
+    text = "M83\n"
+    for number, parts in enumerate(layers, 1):
+        text += f";LAYER_CHANGE\n;Z:{number * 0.2:.1f}\n"
+        for feature, tool, body in parts:
+            text += f";TYPE:{feature}\nT{tool}\n{body}"
+    path.write_text(text)
+    return path
+
+
+def test_the_sliced_result_is_compared_with_the_project(fake_env, cube_stl, labelled_3mf, tmp_path):
+    from creator5_mcp import model, slicecheck
+    project = Path(server.slice_model(str(cube_stl), "PLA", copies=2)["project_3mf"])       # two 20 x 20 x 10 mm cubes
+    first, second = [(o["parts"][0]["tris"].reshape(-1, 3).min(0), o["parts"][0]["tris"].reshape(-1, 3).max(0))
+                     for o in model.load_objects(project)["objects"]]
+    wall = lambda box, inset=0.2: _ring(box[0][0] + inset, box[0][1] + inset, box[1][0] - inset, box[1][1] - inset)
+    both = [("Outer wall", 0, wall(first) + wall(second))]
+    # As modelled: nothing to say.
+    clean = slicecheck.check(project, _gcode(tmp_path / "clean.gcode", [both] * 50))
+    assert clean["checked"] and clean["layers"] == 50 and clean["warnings"] == [] and clean["stops_short_mm"] is None
+    # A 4 mm square that begins at layer 20, 8 mm from anything: it starts in mid-air. A line reaching out from a
+    # wall on layer 30 is a bridge, joined to what holds it, and is not reported.
+    x, y = first[0][0] + 5, first[1][1] + 8                     # clear of both cubes, which stand side by side
+    island = ("Outer wall", 0, _ring(x, y, x + 4, y + 4))
+    bridge = ("Bridge", 0, f"G1 X{first[1][0] - 0.2} Y{first[0][1] + 15}\nG1 X{first[1][0] + 6} Y{first[0][1] + 15} E1\n")
+    layers = [both] * 19 + [both + [island]] * 10 + [both + [island, bridge]] + [both + [island]] * 20
+    found = slicecheck.check(project, _gcode(tmp_path / "island.gcode", layers))
+    assert [(f["z"], f["object"]) for f in found["mid_air"]] == [(4.0, "no object")] and 4 < found["mid_air"][0]["area_mm2"] < 12
+    assert "starts printing in mid-air at 4 mm" in found["warnings"][0] and len(found["warnings"]) == 1
+    # The same square with support under it from the first layer stands on something.
+    prop = ("Support", 0, _ring(x, y, x + 4, y + 4))
+    held = slicecheck.check(project, _gcode(tmp_path / "held.gcode", [both + [prop]] * 19 + [both + [island]] * 31))
+    assert held["mid_air"] == [] and held["warnings"] == []
+    # One cube never printed, and the print ending 4 mm early.
+    partial = slicecheck.check(project, _gcode(tmp_path / "partial.gcode", [[("Outer wall", 0, wall(first))]] * 30))
+    assert partial["left_out"] == ["cube"] and partial["stops_short_mm"] == 4.0
+    assert any("prints nothing where it stands" in w for w in partial["warnings"]) and any("4 mm below the model's top" in w for w in partial["warnings"])
+    # A cube printed 6 mm narrower than its model: its outline has no line beside it.
+    narrow = slicecheck.check(project, _gcode(tmp_path / "narrow.gcode", [[("Outer wall", 0, wall(first, 3.2) + wall(second))]] * 50))
+    assert narrow["smaller"] and narrow["smaller"][0]["toolhead"] is None and "prints smaller than its model" in narrow["warnings"][0]
+    # A two-colour tag whose inlay is printed by the wrong toolhead: toolhead 2's part has no toolhead 2 lines.
+    tag = Path(server.slice_model(str(labelled_3mf), "white PLA", other_filaments=["black PLA"])["project_3mf"])
+    parts = {part["extruder"]: (part["tris"].reshape(-1, 3).min(0), part["tris"].reshape(-1, 3).max(0))
+             for obj in model.load_objects(tag)["objects"] for part in obj["parts"]}
+    body = [("Outer wall", 0, wall(parts[1]))]
+    right = [body + [("Outer wall", 1, wall(parts[2]))]] * 3 + [body] * 17
+    wrong = [body + [("Outer wall", 0, wall(parts[2]))]] * 3 + [body] * 17
+    assert slicecheck.check(tag, _gcode(tmp_path / "right.gcode", right))["warnings"] == []
+    swapped = slicecheck.check(tag, _gcode(tmp_path / "wrong.gcode", wrong))
+    assert {f["toolhead"] for f in swapped["smaller"]} == {2} and "toolhead 2 prints smaller" in swapped["warnings"][0]
