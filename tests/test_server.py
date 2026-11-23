@@ -4,6 +4,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 from creator5_mcp import server
 
 
@@ -302,12 +304,18 @@ def test_tools_over_real_stdio_transport(fake_env, cube_stl):
                 await session.initialize()
                 names = {t.name for t in (await session.list_tools()).tools}
                 reply = await session.call_tool("slice_model", {"model_path": str(cube_stl), "filament": "PLA"})
-                return names, json.loads(reply.content[0].text)
+                payload = json.loads(reply.content[0].text)
+                picture = await session.call_tool("preview", {"project_3mf": payload["project_3mf"], "view": "top"})
+                layer = await session.call_tool("preview", {"project_3mf": payload["project_3mf"], "layer": 1})
+                # The pictures cross the protocol as images, not as text about images.
+                assert [c.type for c in picture.content] == ["image"] and (getattr(picture.content[0], "mime_type", None) or picture.content[0].mimeType) == "image/png"
+                assert [c.type for c in layer.content] == ["image"]
+                return names, payload
 
     names, payload = asyncio.run(run())
     assert names == {"check_setup", "list_filaments", "analyse_model", "recommend_settings", "slice_model",
                      "open_in_slicer", "save_spool", "record_print_result", "compare_with_saved_project",
-                     "check_flash_studio_slice"}
+                     "check_flash_studio_slice", "preview"}
     assert payload["ok"] and payload["summary"]["print_time"] == "1h 23m"
 
 
@@ -556,3 +564,75 @@ def test_print_check_reads_cads_result_and_never_calls_an_unchecked_part_fine(fa
                                                    ["step", "export"], ["stl", "dfm"], ["stl", "dfm"]] or \
            [c.split()[:2] for c in calls[-8:-1]] == [["server", "start"], ["step", "dfm"], ["server", "stop"], ["server", "start"],
                                                      ["step", "export"], ["stl", "dfm"], ["stl", "dfm"]]
+
+
+def _pixels(png: bytes):
+    import io
+    import numpy as np
+    from PIL import Image
+    return np.array(Image.open(io.BytesIO(png)).convert("RGB")).astype(int)
+
+
+def test_the_plate_and_the_first_layer_are_drawn_with_every_slice(fake_env, cube_stl, colour_3mf):
+    from creator5_mcp import preview, slicer
+    result = server.slice_model(str(cube_stl), "red PLA", copies=2)
+    assert result["ok"] and result["notes"] == [], result
+    assert Path(result["plate_png"]).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n" == Path(result["first_layer_png"]).read_bytes()[:8]
+    # From above the bed fills 92% of a 900 px picture, so 1 mm is 900 * 0.92 / 256 px and a 20 mm cube is about 65 px wide.
+    top = _pixels(preview.plate_png(Path(result["project_3mf"]), "top")[0])
+    red = (top[:, :, 0] > 150) & (top[:, :, 1] < 80) & (top[:, :, 2] < 80)
+    columns = np_runs(red.any(axis=0))
+    assert len(columns) == 2 and all(63 <= b - a <= 67 for a, b in columns), columns     # two copies, each 20 mm wide, apart
+    assert tuple(top[5, 5]) == preview.BACKGROUND and tuple(top[450, 60]) == preview.BED_COLOUR
+    # Each toolhead's parts take that toolhead's colour: black body, white cap, gold plinth.
+    colours = server.slice_model(str(colour_3mf), "black PLA", other_filaments=["white PLA", "gold PLA"])
+    seen = _pixels(preview.plate_png(Path(colours["project_3mf"]), "top")[0])
+    plan = [slot["colour"] for slot in colours["plan"]["filaments"]]
+    for colour in plan[1:]:
+        want = [int(colour[i:i + 2], 16) for i in (1, 3, 5)]
+        assert (abs(seen - want).sum(axis=2) < 40).sum() > 20, colour
+    # A black part is lifted to deep grey, so it shows against the dark bed.
+    seen = _pixels(preview.plate_png(Path(colours["project_3mf"]), "iso")[0])       # from above the cap hides the body
+    grey = (seen[:, :, 0] == seen[:, :, 1]) & (seen[:, :, 1] == seen[:, :, 2]) & (seen[:, :, 0] >= 20) & (seen[:, :, 0] <= 52)
+    assert grey.sum() > 20
+    # The first layer comes from the G-code: the fake slicer draws a 20 mm square outline at (100, 100).
+    found = slicer.layer_moves(Path(result["gcode"]))
+    assert found["layer"] == 1 and found["z"] == 0.2 and len(found["moves"]) == 4
+    assert found["moves"][0] == (100.0, 100.0, 120.0, 100.0, 0, "Outer wall")
+    assert server.preview(str(fake_env / "missing.3mf"))["ok"] is False
+    assert "no layer 9" in server.preview(result["project_3mf"], layer=9)["error"]
+    assert "iso or top" in server.preview(result["project_3mf"], view="side")["error"]
+
+
+def np_runs(flags):
+    """(start, end) of each run of True in a row of flags."""
+    import numpy as np
+    edges = np.flatnonzero(np.diff(np.r_[0, flags.astype(int), 0]))
+    return list(zip(edges[::2], edges[1::2]))
+
+
+def test_one_layer_is_read_from_gcode_with_arcs_toolheads_and_features(tmp_path):
+    from creator5_mcp import preview, slicer
+    gcode = tmp_path / "plate_1.gcode"
+    gcode.write_text(
+        "; layer_change_gcode = ;LAYER_CHANGE\n"      # a setting that only mentions the marker is not a layer
+        "M83\nT0\nG1 X5 Y5 E9\n"                      # start-up purge, before any layer
+        ";LAYER_CHANGE\n;Z:0.2\n;TYPE:Brim\nG1 X10 Y10\nG1 X20 Y10 E.5\nG1 X30 Y10\n"
+        ";TYPE:Custom\nG1 X40 Y10 E.5\n"              # the slicer's own section: not part of the print
+        ";TYPE:Outer wall\nT1\nG1 X40 Y20\nG3 X20 Y20 I-10 J0 E1\nG1 X20 Y30 E-.8\n"   # a half circle, then a retraction
+        ";LAYER_CHANGE\n;Z:0.4\n;TYPE:Inner wall\nM82\nG92 E0\nG1 X0 Y0 E1\nG1 X5 Y0 E1\nG1 X9 Y0 E2\n")
+    first = slicer.layer_moves(gcode)
+    assert first["z"] == 0.2 and first["moves"][0] == (10.0, 10.0, 20.0, 10.0, 0, "Brim")
+    arc = [m for m in first["moves"] if m[5] == "Outer wall"]
+    assert len(first["moves"]) == 1 + len(arc) and len(arc) > 20 and {m[4] for m in arc} == {1}
+    assert max(m[1] for m in arc) == pytest.approx(30, abs=0.05) and arc[-1][2:4] == (20.0, 20.0)   # anticlockwise, over the top
+    # By height, and with absolute extrusion: only a move that pushes more filament out is drawn.
+    second = slicer.layer_moves(gcode, z=0.3)
+    assert second["layer"] == 2 and [m[:4] for m in second["moves"]] == [(40.0, 20.0, 0.0, 0.0), (5.0, 0.0, 9.0, 0.0)] or \
+           [m[:4] for m in second["moves"]] == [(20.0, 30.0, 0.0, 0.0), (5.0, 0.0, 9.0, 0.0)]
+    with pytest.raises(slicer.SliceError, match="2 layers"):
+        slicer.layer_moves(gcode, layer=3)
+    # Brim is drawn paler than the wall of the same toolhead.
+    picture = _pixels(preview.layer_png(first["moves"], ["#C8102E", "#1F5AA6"], "layer 1"))
+    assert ((picture[:, :, 0] > 225) & (picture[:, :, 1] > 140) & (picture[:, :, 1] < 200)).sum() > 50      # pale red brim
+    assert ((picture[:, :, 2] > 150) & (picture[:, :, 0] < 60)).sum() > 200                                   # blue wall

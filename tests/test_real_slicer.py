@@ -165,3 +165,21 @@ def test_a_step_is_print_checked_exactly_by_the_real_cad_command(real_env):
     assert any("wall thickness 0.5 mm" in e for e in check["errors"]), check
     assert any(w.startswith("Print check: ") for w in result["plan"]["warnings"])
     assert check["orientation"]["as_it_stands"]["build_height_mm"] == 20.0
+
+
+def test_the_first_layer_picture_shows_the_brim_flash_studio_printed(real_env):
+    from conftest import _stl
+    from creator5_mcp import server, slicer
+    result = server.slice_model(str(_stl(real_env / "post.stl", box_triangles(20, 20, 30))), "PLA", brim="on")
+    assert result["ok"] and result["notes"] == [], result
+    assert Path(result["plate_png"]).stat().st_size > 2000 and Path(result["first_layer_png"]).stat().st_size > 2000
+    first = slicer.layer_moves(Path(result["gcode"]))
+    features = {move[5] for move in first["moves"]}
+    assert "Brim" in features and "Outer wall" in features and "Custom" not in features, features
+    xs = [x for move in first["moves"] for x in (move[0], move[2])]
+    walls = [x for move in first["moves"] if move[5] == "Outer wall" for x in (move[0], move[2])]
+    assert max(walls) - min(walls) == pytest.approx(19.5, abs=0.5)   # the post, measured along the centre of its outer line
+    assert max(xs) - min(xs) > 26                                    # and the brim around it
+    # The last layer is at the post's full height.
+    top = slicer.layer_moves(Path(result["gcode"]), layer=result["summary"]["layers"])
+    assert top["z"] == pytest.approx(30, abs=0.1) and top["moves"]      # a 0.25 mm first layer, then 0.2 mm ones

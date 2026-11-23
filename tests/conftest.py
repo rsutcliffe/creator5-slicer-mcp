@@ -254,7 +254,8 @@ with zipfile.ZipFile(args[-1]) as z:
         top = re.search(r'top_z="([0-9.]+)"', z.read("Metadata/custom_gcode_per_layer.xml").decode()).group(1)
         pause = f";LAYER_CHANGE\n;Z:{top}\n;PAUSE_PRINT\nM25\n"
 body = ("; HEADER_BLOCK_START\n; total estimated time: 1h 23m 45s\n; total layer number: 180\n; HEADER_BLOCK_END\n"
-        "; CONFIG_BLOCK_START\n" + block + "; CONFIG_BLOCK_END\nG1 X0\n" + pause +
+        "; CONFIG_BLOCK_START\n" + block + "; CONFIG_BLOCK_END\nG1 X0\n"
+        ";LAYER_CHANGE\n;Z:0.2\n;TYPE:Outer wall\nG1 X100 Y100\nG1 X120 Y100 E1\nG1 X120 Y120 E1\nG1 X100 Y120 E1\nG1 X100 Y100 E1\n" + pause +
         "; filament used [mm] = 5000.5\n; filament used [g] = 15.25\n")
 if process.get("wall_loops") == "98":          # killed part-way through writing
     (out / "plate_1.gcode").write_text(body[:60]); sys.exit(-11)

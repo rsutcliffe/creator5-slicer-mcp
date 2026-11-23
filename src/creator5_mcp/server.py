@@ -11,11 +11,11 @@ import zipfile
 from pathlib import Path
 
 try:  # mcp 2.x
-    from mcp.server.mcpserver import MCPServer as FastMCP
+    from mcp.server.mcpserver import Image, MCPServer as FastMCP
 except ImportError:  # mcp 1.x
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.fastmcp import FastMCP, Image
 
-from . import __version__, model, printcheck, profiles, project, recommend, results, slicer, spools
+from . import __version__, model, preview as pictures, printcheck, profiles, project, recommend, results, slicer, spools
 from .config import ConfigError, load_settings
 
 mcp = FastMCP(
@@ -29,7 +29,9 @@ mcp = FastMCP(
         "and Print in Flash Studio. Pass auto_orient only when the user asks for it. Relay the returned "
         "warnings to the user. Each result carries print_check: whether the shape will print, how it stands "
         "against the best way up, and not_judged, what the file could not be measured for. Say what was not judged; "
-        "never call an unchecked part fine. If the user gives figures from the spool's label, pass them as "
+        "never call an unchecked part fine. slice_model also draws the plate (plate_png) and the first layer "
+        "(first_layer_png): show the plate picture with every result, by calling preview with the project_3mf path, "
+        "and the first layer when supports, a brim or fine detail matter. If the user gives figures from the spool's label, pass them as "
         "nozzle_temp, bed_temp and max_speed, and offer to keep them with save_spool so the spool's name is "
         "enough next time. For a multi-colour model, pass the filaments in toolheads 2 to 4 as other_filaments. "
         "Use recommend_settings first when the user wants to review choices. For a job with more than one filament, "
@@ -539,11 +541,59 @@ def slice_model(
             plan["warnings"].append(
                 f"Supports are off, but {analysis['overhang_area_mm2']:g} mm² of the underside is flatter than "
                 f"{analysis['support_angle']:g} degrees and will print over thin air. Turn supports on unless that is intended.")
-        return {"ok": True, "project_3mf": made["project"], **result, "objects": made["objects"],
+        drawn = _draw(Path(made["project"]), Path(result["gcode"]), job_dir, result["notes"])
+        return {"ok": True, "project_3mf": made["project"], **result, **drawn, "objects": made["objects"],
                 "supports_on": supports_on, "support_sections_in_gcode": supports_printed, "pauses_at_z": paused_at,
                 "settings_checked_in_gcode": len(expected) - len(mismatched), "settings_mismatched": mismatched,
                 "plan": plan, "model": analysis, "print_check": check}
     except _ERRORS as exc:
+        return _fail(exc)
+
+
+def _layer_picture(project: Path, gcode: Path, layer: int = 1, z: float = 0) -> bytes:
+    found = slicer.layer_moves(gcode, layer, z)
+    title = f"layer {found['layer']} at {found['z']:g} mm"
+    return pictures.layer_png(found["moves"], model.load_objects(project)["colours"], title)
+
+
+def _draw(project: Path, gcode: Path, job_dir: Path, notes: list[str]) -> dict:
+    """Write the plate and first-layer pictures beside the project. A picture that fails is a note, never a failed slice."""
+    out = {"plate_png": None, "first_layer_png": None}
+    try:
+        png, said = pictures.plate_png(project)
+        (job_dir / "plate.png").write_bytes(png)
+        out["plate_png"] = str(job_dir / "plate.png")
+        notes += said
+        (job_dir / "first_layer.png").write_bytes(_layer_picture(project, gcode))
+        out["first_layer_png"] = str(job_dir / "first_layer.png")
+    except Exception as exc:   # drawing is a courtesy: nothing it can raise should lose a good slice
+        notes.append(f"A preview picture could not be drawn: {exc}")
+    return out
+
+
+@mcp.tool()
+def preview(project_3mf: str, view: str = "iso", layer: int = 0, z: float = 0):
+    """A picture of what slice_model made: the plate, or one sliced layer seen from above.
+
+    With no layer and no z, the plate: the bed and every part in its toolhead's colour, as the project
+    file holds it. With layer or z, that layer of the job's G-code: each extrusion in its toolhead's
+    colour, with supports, brim and skirt paler. Show the plate after every slice.
+
+    Args:
+        project_3mf: The project_3mf path slice_model returned.
+        view: For the plate: iso (from the front left, looking down) or top.
+        layer: Layer number, 1 for the first. 0 for the plate.
+        z: Height in mm, instead of a layer number: the first layer whose top is at or above it.
+    """
+    try:
+        target = _path(project_3mf)
+        if not layer and not z:
+            return Image(data=pictures.plate_png(target, view)[0], format="png")
+        gcodes = sorted(target.parent.glob("*.gcode"))
+        if not gcodes:
+            return _fail(FileNotFoundError(f"No G-code beside {target.name}. Slice the model with slice_model first."))
+        return Image(data=_layer_picture(target, gcodes[0], layer or 1, z), format="png")
+    except _ERRORS + (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
         return _fail(exc)
 
 
