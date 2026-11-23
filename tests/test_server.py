@@ -315,7 +315,7 @@ def test_tools_over_real_stdio_transport(fake_env, cube_stl):
     names, payload = asyncio.run(run())
     assert names == {"check_setup", "list_filaments", "analyse_model", "recommend_settings", "slice_model",
                      "open_in_slicer", "save_spool", "record_print_result", "compare_with_saved_project",
-                     "check_flash_studio_slice", "preview"}
+                     "check_flash_studio_slice", "preview", "printer_status"}
     assert payload["ok"] and payload["summary"]["print_time"] == "1h 23m"
 
 
@@ -693,3 +693,115 @@ def test_the_sliced_result_is_compared_with_the_project(fake_env, cube_stl, labe
     assert slicecheck.check(tag, _gcode(tmp_path / "right.gcode", right))["warnings"] == []
     swapped = slicecheck.check(tag, _gcode(tmp_path / "wrong.gcode", wrong))
     assert {f["toolhead"] for f in swapped["smaller"]} == {2} and "toolhead 2 prints smaller" in swapped["warnings"][0]
+
+
+def _fake_printer(reply: dict, mode: int = 0, pid: int = 40):
+    """A Creator 5 on localhost: answers a UDP probe with the 276-byte packet, and POST /detail with `reply`.
+    Returns (probe address, what was asked for, stop)."""
+    import socket
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    asked = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            asked.append((self.path, body))
+            data = json.dumps(reply).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "appliation/json")      # the firmware's own spelling
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    web = HTTPServer(("127.0.0.1", 0), Handler)
+    packet = bytearray(276)
+    packet[0:9] = b"Workshop\0"
+    packet[0x88:0x8A] = pid.to_bytes(2, "big")
+    packet[0x8E:0x90] = web.server_address[1].to_bytes(2, "big")
+    packet[0x90], packet[0x91] = mode, 1 - (mode == 0)
+    packet[0x92:0x92 + 10] = b"SNTEST0001"
+    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp.bind(("127.0.0.1", 0))
+    udp.settimeout(0.2)
+    running = threading.Event()
+    running.set()
+
+    def answer():
+        while running.is_set():
+            try:
+                _, sender = udp.recvfrom(64)
+                udp.sendto(bytes(packet), sender)
+            except OSError:
+                pass
+
+    threads = [threading.Thread(target=answer, daemon=True), threading.Thread(target=web.serve_forever, daemon=True)]
+    for thread in threads:
+        thread.start()
+
+    def stop():
+        running.clear()
+        web.shutdown()
+        web.server_close()
+        threads[0].join(1)
+        udp.close()
+
+    return (udp.getsockname(),), asked, stop
+
+
+def test_printer_status_is_read_only_and_says_what_to_do_when_it_cannot_read(monkeypatch):
+    from creator5_mcp import printer
+    detail = {"status": "printing", "firmwareVersion": "1.9.8", "printFileName": "hook.3mf", "printProgress": 0.42,
+              "printLayer": 120, "targetPrintLayer": 391, "printDuration": 2400, "estimatedTime": 3500,
+              "nozzleTemps": [210.2, 24.0, 24.1, 23.9], "nozzleTargetTemps": [210, 0, 0, 0], "platTemp": 59.8, "platTargetTemp": 60,
+              "flashRegisterCode": "secret-register-code",
+              "matlStationInfo": {"currentSlot": 1, "slotInfos": [{"slotId": 1, "hasFilament": True, "materialName": "PLA",
+                                                                   "materialColor": "#161616"}]}}
+    probes, asked, stop = _fake_printer({"code": 0, "message": "Success", "detail": detail})
+    try:
+        seen = printer.discover(0.5, probes)
+        assert [(p["name"], p["serial_number"], p["model"], p["mode"], p["address"]) for p in seen] == \
+               [("Workshop", "SNTEST0001", "Creator 5", "LAN-only", "127.0.0.1")]
+        # No check code stored: found, not read, and told how to store it, in a command with no quotation marks.
+        none = printer.status(0.5, probes, code_for=lambda serial: None)
+        assert none["found"] and not none["status_read"] and asked == []
+        assert "security add-generic-password -s creator5-slicer-mcp-printer -a SNTEST0001 -w" in none["message"]
+        assert chr(34) not in none["message"] and chr(39) not in none["message"].replace("printer's", "")
+        # With the code: one question, to /detail, carrying the serial number and code; the state comes back.
+        read = printer.status(0.5, probes, code_for=lambda serial: "abcd1234")
+        assert asked == [("/detail", {"serialNumber": "SNTEST0001", "checkCode": "abcd1234"})]
+        assert read["status_read"] and read["state"] == "printing" and read["progress"] == 0.42 and read["layers"] == 391
+        assert read["nozzle_c"][0] == 210.2 and read["bed_target_c"] == 60 and read["toolhead_in_use"] == 1
+        assert read["loaded"] == [{"toolhead": 1, "has_filament": True, "material": "PLA", "colour": "#161616"}]
+        # Neither the check code nor the printer's cloud register code is ever handed back.
+        assert "abcd1234" not in json.dumps(read) and "secret-register-code" not in json.dumps(read)
+        monkeypatch.setattr(printer, "status", lambda: {"found": False})    # the tool itself never touches a real network in tests
+        assert server.printer_status() == {"ok": True, "found": False}
+        monkeypatch.undo()
+    finally:
+        stop()
+    # Cloud mode: the printer refuses with code -2, and the answer says what LAN-only mode costs.
+    probes, asked, stop = _fake_printer({"code": -2, "message": "Lan mode error"}, mode=1, pid=41)
+    try:
+        cloud = printer.status(0.5, probes, code_for=lambda serial: "abcd1234")
+        assert cloud["found"] and cloud["model"] == "Creator 5 Pro" and cloud["mode"] == "cloud" and not cloud["status_read"]
+        assert "cloud mode" in cloud["message"] and "turns the Flashforge cloud off" in cloud["message"]
+    finally:
+        stop()
+    probes, asked, stop = _fake_printer({"code": 1, "message": "Access code is different"})
+    try:
+        wrong = printer.status(0.5, probes, code_for=lambda serial: "nope")
+        assert "Access code is different" in wrong["message"] and "security delete-generic-password" in wrong["message"]
+    finally:
+        stop()
+    # Nothing on the network: an answer, not an error.
+    silent = printer.status(0.3, (("127.0.0.1", 9),), code_for=lambda serial: "abcd1234")
+    assert silent["found"] is False and "No Creator 5 answered" in silent["message"]
+    # Read-only by construction: the module names one endpoint, and none that changes the printer.
+    source = Path(printer.__file__).read_text()
+    assert printer.ENDPOINT == "/detail" and source.count("ENDPOINT") == 2
+    for forbidden in ("/control", "/printGcode", "/uploadGcode", "/gcodeList", "/gcodeThumb", "/notifyWanBind", "/product", "/checkCode"):
+        assert forbidden not in source, forbidden

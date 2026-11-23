@@ -15,7 +15,7 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP, Image
 
-from . import __version__, model, preview as pictures, printcheck, profiles, project, recommend, results, slicecheck, slicer, spools
+from . import __version__, model, preview as pictures, printcheck, printer, profiles, project, recommend, results, slicecheck, slicer, spools
 from .config import ConfigError, load_settings
 
 mcp = FastMCP(
@@ -38,8 +38,9 @@ mcp = FastMCP(
         "Use recommend_settings first when the user wants to review choices. For a job with more than one filament, "
         "after the user presses Slice plate in Flash Studio, call check_flash_studio_slice to confirm each toolhead's "
         "temperatures. Pass finish=smooth when the user wants a smooth or professional surface. When the user says how a print "
-        "came out, call record_print_result. The user prints from Flash Studio; "
-        "this server never sends anything to the printer."
+        "came out, call record_print_result. When the user asks about the printer, or before telling them to load "
+        "filament, call printer_status: it reads what the printer is doing and what is loaded in each toolhead, and "
+        "changes nothing. The user prints from Flash Studio; this server never sends anything to the printer."
     ),
 )
 
@@ -632,6 +633,18 @@ def check_flash_studio_slice(project_3mf: str) -> dict:
         return {"ok": True, **slicer.studio_report(gcode, asked)}
     except _ERRORS + (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
         return _fail(exc)
+
+
+@mcp.tool()
+def printer_status() -> dict:
+    """What the Creator 5 is doing now, read over the home network. Read-only: nothing is sent to the printer but the question.
+
+    Finds the printer by itself. Returns its state, the file printing with progress and time left, each
+    toolhead's temperature and the bed's, and the material and colour loaded in each toolhead.
+    When the status cannot be read, message says why and what to do: the printer answers only in
+    LAN-only mode, and needs its check code stored once in the Mac's Keychain.
+    """
+    return {"ok": True, **printer.status()}
 
 
 @mcp.tool()
