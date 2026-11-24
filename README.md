@@ -42,6 +42,24 @@ Or install it yourself and point the client at the `creator5-slicer-mcp` command
 pipx install git+https://github.com/rsutcliffe/creator5-slicer-mcp
 ```
 
+### Claude Desktop bundle
+
+Each release carries `creator5-slicer-mcp-<version>.mcpb`. Open it in Claude Desktop and it installs the server; Claude Desktop fetches the Python packages itself. Build one from a clone with `python scripts/build_bundle.py`.
+
+### Check or remove an installation
+
+```bash
+creator5-slicer-mcp doctor
+```
+
+It checks the slicer, the presets, the prints folder, the print check tool, and which copy Claude Desktop and Claude Code run, and prints the fix beside each fault.
+
+```bash
+creator5-slicer-mcp uninstall
+```
+
+It disconnects the server from Claude Desktop and Claude Code. Your projects, print log and spools are left alone.
+
 ### Install from a local clone
 
 Use this route if you want to edit the settings tables. None of these commands need quotation marks.

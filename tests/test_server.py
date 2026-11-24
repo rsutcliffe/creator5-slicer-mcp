@@ -200,7 +200,7 @@ def test_only_toolhead_1_carries_a_spools_own_figures(fake_env, colour_3mf):
 
 def test_check_setup_says_which_code_is_running(fake_env, monkeypatch):
     report = server.check_setup()
-    assert report["server_version"] == "0.2.0" and report["restart_needed"] is False
+    assert report["server_version"] == "0.3.0" and report["restart_needed"] is False
     assert report["code_revision"] == server._STARTED_AT_REVISION
     # The code on disk moved on after the server started.
     monkeypatch.setattr(server, "_code_revision", lambda: "abc1234")
@@ -953,3 +953,57 @@ def test_a_flow_test_is_a_plate_of_tubes_and_its_result_becomes_the_spools_limit
     assert "15 fit the bed" in server.flow_test("PLA", start=2, end=40, step=1)["error"]
     assert "not a flow test" in server.record_flow_test("black pla", server.slice_model(str(cube_stl), "PLA")["project_3mf"], 1)["error"]
     assert flowtest.tube().shape == (200, 3, 3)
+
+
+def test_doctor_names_each_fault_and_uninstall_leaves_the_prints_alone(fake_env, tmp_path, monkeypatch, capsys):
+    from creator5_mcp import doctor
+    desktop = tmp_path / "claude_desktop_config.json"
+    monkeypatch.setenv("CLAUDE_DESKTOP_CONFIG", str(desktop))
+    code = tmp_path / "claude.json"
+    # Not connected anywhere, and no print check tool: both are named, each with its fix.
+    found = doctor.checks(code)
+    said = {text: (ok, fix) for ok, text, fix in found}
+    assert any(text.startswith("Slicer found") and ok for text, (ok, _) in said.items())
+    assert said["The print check tool (cad) is not installed; shapes are sliced unchecked."] == (False, "Run: uv tool install cad")
+    assert said["Neither Claude Desktop nor Claude Code is connected to this server."][1].startswith("Run ./scripts/setup.sh")
+    # Claude Desktop pointing at another copy is a fault; pointing at this one is not.
+    desktop.write_text(json.dumps({"mcpServers": {"creator5-slicer": {"command": "/old/copy/creator5-slicer-mcp"}, "other": {"command": "x"}},
+                                   "theme": "dark"}))
+    assert any(not ok and "Claude Desktop runs another copy: /old/copy/creator5-slicer-mcp" in text for ok, text, _ in doctor.checks(code))
+    desktop.write_text(json.dumps({"mcpServers": {"creator5-slicer": {"command": str(doctor._here())}, "other": {"command": "x"}}, "theme": "dark"}))
+    assert any(ok and text == "Claude Desktop: connected to this copy." for ok, text, _ in doctor.checks(code))
+    assert doctor.doctor() == 1                                  # cad is still missing here
+    printed = capsys.readouterr().out
+    assert "FIX  The print check tool" in printed and chr(34) not in printed and "to fix, marked FIX above" in printed
+    # Uninstall removes only this server's entry, keeps a backup, and touches nothing in the prints folder.
+    kept = tmp_path / "out" / "print_results.json"
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_text("[]")
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
+    assert doctor.main(["uninstall"]) == 0
+    after = json.loads(desktop.read_text())
+    assert after == {"mcpServers": {"other": {"command": "x"}}, "theme": "dark"} and kept.read_text() == "[]"
+    assert len(list(tmp_path.glob("claude_desktop_config.json.backup-*"))) == 1
+    assert "were left alone" in capsys.readouterr().out
+
+
+def test_the_desktop_bundle_holds_a_valid_manifest_and_the_server(tmp_path):
+    import importlib.util
+    import zipfile
+    spec = importlib.util.spec_from_file_location("build_bundle", Path(server.__file__).parents[2] / "scripts" / "build_bundle.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    bundle = module.build(tmp_path)
+    assert bundle.suffix == ".mcpb" and bundle.stat().st_size < 400_000
+    with zipfile.ZipFile(bundle) as archive:
+        names = set(archive.namelist())
+        manifest = json.loads(archive.read("manifest.json"))
+        packed = archive.read("pyproject.toml").decode()
+    # The fields the manifest spec requires, and the uv server type, which needs pyproject.toml and no packed libraries.
+    assert {"manifest_version", "name", "version", "description", "author", "server"} <= set(manifest) and manifest["author"]["name"]
+    assert manifest["server"]["type"] == "uv" and manifest["server"]["entry_point"] in names and manifest["manifest_version"] == "0.4"
+    assert manifest["server"]["mcp_config"]["args"][-1] == "creator5-slicer-mcp" and 'creator5-slicer-mcp = "creator5_mcp.server:main"' in packed
+    assert manifest["version"] in bundle.name and {"pyproject.toml", "LICENSE", "THIRD_PARTY_NOTICES.md"} <= names
+    for module_name in ("server", "printcheck", "slicecheck", "preview", "printer", "flowtest", "doctor"):
+        assert f"src/creator5_mcp/{module_name}.py" in names
+    assert not any(".venv" in name or "__pycache__" in name or name.startswith("tests/") for name in names)
