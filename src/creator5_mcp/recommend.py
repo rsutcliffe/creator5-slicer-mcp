@@ -44,9 +44,20 @@ _ENCLOSURE = ("This material shrinks as it cools. Print it only with the chamber
               "on a machine without chamber heating expect warping on parts wider than about 80 mm.")
 _DRY = "Dry the spool before printing; damp filament gives stringing, rough walls and weak layers."
 # Elegoo gives 60 C for 8 hours for its PETG. Two prints on 24 Nov 2026 with the same settings: undried strung,
-# about two hours in the dryer nearly cured it. The other materials have no maker's figure here yet.
+# about two hours in the dryer nearly cured it.
 _DRY_PETG = (_DRY + " PETG wants about 8 hours at 60 C in the dryer (Elegoo's figure for its PETG), so start the dryer "
              "well before the print: two hours dries only the outer turns of a full spool.")
+
+
+def _dry(what: str, hours: str, temp: int) -> str:
+    """The drying warning with Flashforge's figure, read 24 Nov 2026 from its wiki table "Drying Temperature and
+    Time for Common Filaments" and its "Carbon Fiber Filament Usage Guide" (section 3.1, air drying oven).
+    PPA-CF is in neither, so it keeps the plain warning."""
+    return (f"{_DRY} {what} wants about {hours} hours at {temp} C in the dryer (Flashforge's figure for its own filament), "
+            "so start the dryer well before the print.")
+
+
+
 _FIBRE = "Fibre-filled filament is stiffer but more brittle between layers; orient the part so loads run along the layers."
 
 # Order matters: the first material whose pattern matches wins, so specific
@@ -62,7 +73,7 @@ MATERIALS: tuple[Material, ...] = (
              notes=("Slow, even outer walls keep the silk sheen consistent.",),
              warnings=("Silk PLA bonds weakly between layers; avoid it for load-bearing parts.",)),
     Material("PLA_CF", "PLA-CF", ("Flashforge PLA-CF",), (r"pla[\s_-]*cf", r"carbon.*pla", r"pla.*carbon"),
-             warnings=(_FIBRE, _DRY)),
+             warnings=(_FIBRE, _dry("PLA-CF", "6", 60))),
     Material("PLA_MATTE", "Matte PLA", ("Flashforge PLA Matte", "Flashforge PLA Basic"), (r"matte.*pla|pla.*matte",),
              notes=("Matte PLA hides layer lines well; standard quality is usually enough.",)),
     Material("PLA_HS", "High-speed PLA", ("Flashforge HS PLA", "Flashforge PLA Basic"),
@@ -73,8 +84,8 @@ MATERIALS: tuple[Material, ...] = (
     Material("PLA_METAL", "Metal-effect PLA", ("Flashforge PLA Metal", "Flashforge PLA Basic"), (r"metal.*pla|pla.*metal",)),
     Material("PLA_LUMINOUS", "Glow PLA", ("Flashforge PLA Luminous", "Flashforge PLA Basic"), (r"(luminous|glow).*pla|pla.*(luminous|glow)",)),
     Material("PETG_CF", "PETG-CF", ("Flashforge PETG-CF",), (r"petg[\s_-]*cf",),
-             process={"support_top_z_distance": "0.25"}, warnings=(_FIBRE, _DRY)),
-    Material("PET_CF", "PET-CF", ("Flashforge PET-CF",), (r"pet[\s_-]*cf",), warps=True, warnings=(_FIBRE, _DRY)),
+             process={"support_top_z_distance": "0.25"}, warnings=(_FIBRE, _dry("PETG-CF", "8", 70))),
+    Material("PET_CF", "PET-CF", ("Flashforge PET-CF",), (r"pet[\s_-]*cf",), warps=True, warnings=(_FIBRE, _dry("PET-CF", "8", 90))),
     Material("PETG_HS", "High-speed PETG", ("Flashforge HS PETG", "Flashforge PETG Pro"),
              (r"hs[\s_-]*petg", r"high[\s_-]*speed.*petg"), process={"support_top_z_distance": "0.25"}, warnings=(_DRY_PETG,)),
     Material("PETG_CLEAR", "Transparent PETG", ("Flashforge PETG Transparent", "Flashforge PETG Pro"),
@@ -93,15 +104,17 @@ MATERIALS: tuple[Material, ...] = (
     Material("TPU_64D", "TPU 64D", ("Flashforge TPU-64D", "Generic TPU-64D"), (r"64\s*d",), flexible=True),
     Material("TPU_90A", "TPU 90A", ("Flashforge TPU-90A", "Generic TPU-90A"), (r"90\s*a",), flexible=True),
     Material("TPU", "TPU 95A", ("Flashforge TPU-95A", "Generic TPU-95A"), (r"tpu|tpe|flex",), flexible=True,
-             warnings=(_DRY,)),
-    Material("PAHT_CF", "PAHT-CF", ("Flashforge PAHT-CF", "FusRock PAHT-CF"), (r"paht",), warps=True, warnings=(_ENCLOSURE, _FIBRE, _DRY)),
+             warnings=(_dry("TPU", "6", 50),)),
+    Material("PAHT_CF", "PAHT-CF", ("Flashforge PAHT-CF", "FusRock PAHT-CF"), (r"paht",), warps=True,
+             warnings=(_ENCLOSURE, _FIBRE, _dry("PAHT-CF", "8", 70))),
     Material("PPA_CF", "PPA-CF", ("Flashforge PPA-CF",), (r"ppa",), warps=True, warnings=(_ENCLOSURE, _FIBRE, _DRY)),
-    Material("PPS_CF", "PPS-CF", ("Flashforge PPS-CF",), (r"pps",), warps=True, warnings=(_ENCLOSURE, _FIBRE, _DRY)),
+    Material("PPS_CF", "PPS-CF", ("Flashforge PPS-CF",), (r"pps",), warps=True,
+             warnings=(_ENCLOSURE, _FIBRE, _dry("PPS-CF", "8", 90))),
     Material("PA_CF", "PA-CF (nylon)", ("Flashforge PA-CF", "FusRock PAHT-CF"), (r"\bpa\b|pa[\s_-]*cf|nylon",), warps=True,
-             warnings=(_ENCLOSURE, _FIBRE, _DRY)),
+             warnings=(_ENCLOSURE, _FIBRE, _dry("Nylon (PA-CF)", "8 to 12", 80))),
     Material("HIPS", "HIPS", ("Flashforge HIPS",), (r"hips",), warps=True, warnings=(_ENCLOSURE,)),
     Material("PVA", "PVA (soluble support)", ("Flashforge PVA", "Generic BVOH"), (r"pva|bvoh",),
-             warnings=("PVA and BVOH are support materials; they make poor standalone parts.", _DRY)),
+             warnings=("PVA and BVOH are support materials; they make poor standalone parts.", _dry("PVA", "6", 80))),
     Material("PLA", "PLA", ("Flashforge PLA Basic", "Generic PLA"), (r"pla",)),
 )
 
