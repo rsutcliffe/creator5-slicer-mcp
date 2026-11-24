@@ -303,7 +303,7 @@ A downloaded project often carries its designer's setup:
 
 Two parts are written with [build123d](https://github.com/gumyr/build123d): named dimensions at the top, an exact solid, a STEP file out.
 
-- `models/rawlplug/build_rawlplug.py`: wall plugs 30 mm long for 4 to 5 mm screws, one for a 7 mm hole and one for a 9 mm hole. They print standing on their collars with no supports; two of the 7 mm take 21 minutes and 2.3 g in PETG.
+- `models/rawlplug/build_rawlplug.py`: wall plugs 30 mm long for 4 to 5 mm screws, one for a 7 mm hole and one for a 9 mm hole. They print standing on their collars with no supports; two of the 7 mm take 21 minutes and 2.3 g in PETG. A third, `Rawlplug_8x40_grip`, is for an 8 mm hole in hard brick: 40 mm long, split four ways, with saw-tooth rings and a solid neck (18 minutes, 1.8 g). Its hold is untested; pull on it by hand before trusting it.
 - `models/dualsense_hook/build_hook.py`: a wall hook for a game controller.
 
 Change a number, run `cad run build_rawlplug.py` in the model's folder (with `cad server start` before and `cad server stop` after), and give the STEP to `slice_model`.

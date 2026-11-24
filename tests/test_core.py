@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,16 @@ def test_match_material(text, key):
 def test_unknown_material_is_rejected():
     with pytest.raises(recommend.RecommendError, match="not recognised"):
         recommend.match_material("unobtainium")
+
+
+def test_a_drying_warning_says_how_long_and_how_hot():
+    """A warning to dry the spool is no use at print time unless it says how far ahead to start the dryer."""
+    told = {m.key: w for m in recommend.MATERIALS for w in m.warnings if w.startswith("Dry the spool")}
+    assert set(told) == {"PLA_CF", "PETG_CF", "PET_CF", "PETG_HS", "PETG_CLEAR", "PETG", "TPU", "PAHT_CF", "PPA_CF",
+                         "PPS_CF", "PA_CF", "PVA"}
+    without = [key for key, w in told.items() if not re.search(r"about [\d to]+ hours at \d+ C", w)]
+    assert without == ["PPA_CF"]                    # Flashforge publishes no figure for it
+    assert "6 hours at 60 C" in told["PLA_CF"] and "8 to 12 hours at 80 C" in told["PA_CF"]
 
 
 def test_strength_scales_walls_and_infill(profiles_dir):
