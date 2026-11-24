@@ -52,7 +52,7 @@ cd creator5-slicer-mcp
 ./scripts/setup.sh
 ```
 
-`setup.sh` does everything in one go and is safe to run again to update. It pulls the latest code, installs it into `.venv`, installs the print check tool, slices a test cube with your real slicer, and only if that passes registers the server with Claude Desktop and Claude Code. The full output is saved to `setup_report.txt`. Quit and reopen Claude afterwards: a running server keeps its old code until it restarts.
+`setup.sh` does everything in one go and is safe to run again to update. It pulls the latest code, installs it into `.venv`, installs the print check tool, slices a test cube with your real slicer, and only if that passes installs a skill that tells Claude how to use the server (`skills/creator5-slicer/SKILL.md`, copied to `~/.claude/skills/`) and registers the server with Claude Desktop and Claude Code. The full output is saved to `setup_report.txt`. Quit and reopen Claude afterwards: a running server keeps its old code until it restarts.
 
 The individual steps, if you prefer to run them by hand:
 
@@ -108,7 +108,7 @@ It checks the slicer, the presets, the prints folder, the print check tool, and 
 creator5-slicer-mcp uninstall
 ```
 
-It disconnects the server from Claude Desktop and Claude Code. Your projects, print log and spools are left alone.
+It disconnects the server from Claude Desktop and Claude Code and removes the skill. Your projects, print log and spools are left alone.
 
 ### Configuration
 

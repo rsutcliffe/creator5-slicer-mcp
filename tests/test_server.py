@@ -968,6 +968,7 @@ def test_doctor_names_each_fault_and_uninstall_leaves_the_prints_alone(fake_env,
     from creator5_mcp import doctor
     desktop = tmp_path / "claude_desktop_config.json"
     monkeypatch.setenv("CLAUDE_DESKTOP_CONFIG", str(desktop))
+    monkeypatch.setattr(doctor, "skill_folder", lambda: tmp_path / "no-skill-here")
     code = tmp_path / "claude.json"
     # Not connected anywhere, and no print check tool: both are named, each with its fix.
     found = doctor.checks(code)
@@ -989,7 +990,13 @@ def test_doctor_names_each_fault_and_uninstall_leaves_the_prints_alone(fake_env,
     kept.parent.mkdir(parents=True, exist_ok=True)
     kept.write_text("[]")
     monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
+    skill = tmp_path / "skills" / "creator5-slicer"                # never the real one under the home folder
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("skill")
+    monkeypatch.setattr(doctor, "skill_folder", lambda: skill)
+    assert any(text == "Skill for Claude: installed." for _, text, _ in doctor.checks(code))
     assert doctor.main(["uninstall"]) == 0
+    assert not skill.exists()
     after = json.loads(desktop.read_text())
     assert after == {"mcpServers": {"other": {"command": "x"}}, "theme": "dark"} and kept.read_text() == "[]"
     assert len(list(tmp_path.glob("claude_desktop_config.json.backup-*"))) == 1
@@ -1069,3 +1076,16 @@ def test_temperature_and_pressure_advance_towers_and_what_they_save(fake_env, cu
     gcode = fake_env / "t.gcode"
     gcode.write_text("M104 S200\n;LAYER_CHANGE\n;Z:0.2\nG1 X1\n;LAYER_CHANGE\n;Z:8.8\n;CUSTOM_GCODE\nM104 S250 ; block 2\nG1 X2\n")
     assert towers.commands(gcode, "M104") == [(8.8, "M104 S250")]
+
+
+def test_the_skill_names_every_tool_and_no_tool_the_server_lacks():
+    import re
+    skill = (Path(server.__file__).parents[2] / "skills" / "creator5-slicer" / "SKILL.md").read_text()
+    assert skill.startswith("---\nname: creator5-slicer\ndescription: ")
+    tools = {t.name for t in asyncio.run(server.mcp.list_tools())}
+    assert len(tools) == 20
+    assert tools - {name for name in tools if f"`{name}`" in skill} == set()          # every tool is named
+    # Anything written like a tool call is a real tool: a name in backticks that ends a table row's tool column.
+    named = set(re.findall(r"\| `([a-z_]+)`", skill)) | set(re.findall(r"then `([a-z_]+)`", skill))
+    assert named and named <= tools, named - tools
+    assert chr(8220) not in skill and chr(8221) not in skill

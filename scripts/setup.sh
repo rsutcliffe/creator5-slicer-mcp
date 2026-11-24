@@ -43,6 +43,10 @@ else
 fi
 
 if [ "$SMOKE" = ok ]; then
+    step "Installing the skill that tells Claude how to use the server"
+    mkdir -p "$HOME/.claude/skills/creator5-slicer" && cp skills/creator5-slicer/SKILL.md "$HOME/.claude/skills/creator5-slicer/SKILL.md" \
+        && echo "installed in $HOME/.claude/skills/creator5-slicer" || echo "(could not install the skill; the server works without it)"
+
     step "Registering with Claude Desktop"
     .venv/bin/python scripts/install_claude_desktop.py
     if command -v claude >/dev/null 2>&1; then
