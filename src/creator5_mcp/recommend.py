@@ -43,6 +43,10 @@ class Material:
 _ENCLOSURE = ("This material shrinks as it cools. Print it only with the chamber closed and warm; "
               "on a machine without chamber heating expect warping on parts wider than about 80 mm.")
 _DRY = "Dry the spool before printing; damp filament gives stringing, rough walls and weak layers."
+# Elegoo gives 60 C for 8 hours for its PETG. Two prints on 24 Nov 2026 with the same settings: undried strung,
+# about two hours in the dryer nearly cured it. The other materials have no maker's figure here yet.
+_DRY_PETG = (_DRY + " PETG wants about 8 hours at 60 C in the dryer (Elegoo's figure for its PETG), so start the dryer "
+             "well before the print: two hours dries only the outer turns of a full spool.")
 _FIBRE = "Fibre-filled filament is stiffer but more brittle between layers; orient the part so loads run along the layers."
 
 # Order matters: the first material whose pattern matches wins, so specific
@@ -72,14 +76,14 @@ MATERIALS: tuple[Material, ...] = (
              process={"support_top_z_distance": "0.25"}, warnings=(_FIBRE, _DRY)),
     Material("PET_CF", "PET-CF", ("Flashforge PET-CF",), (r"pet[\s_-]*cf",), warps=True, warnings=(_FIBRE, _DRY)),
     Material("PETG_HS", "High-speed PETG", ("Flashforge HS PETG", "Flashforge PETG Pro"),
-             (r"hs[\s_-]*petg", r"high[\s_-]*speed.*petg"), process={"support_top_z_distance": "0.25"}, warnings=(_DRY,)),
+             (r"hs[\s_-]*petg", r"high[\s_-]*speed.*petg"), process={"support_top_z_distance": "0.25"}, warnings=(_DRY_PETG,)),
     Material("PETG_CLEAR", "Transparent PETG", ("Flashforge PETG Transparent", "Flashforge PETG Pro"),
              (r"(transparent|clear|translucent).*petg", r"petg.*(transparent|clear|translucent)"),
-             process={"support_top_z_distance": "0.25"}, warnings=(_DRY,)),
+             process={"support_top_z_distance": "0.25"}, warnings=(_DRY_PETG,)),
     Material("PETG", "PETG", ("Flashforge PETG Pro", "Flashforge HS PETG"), (r"petg", r"\bpet\b"),
              process={"support_top_z_distance": "0.25"},
              notes=("A wider gap above supports stops PETG welding itself to them.",),
-             warnings=(_DRY,)),
+             warnings=(_DRY_PETG,)),
     Material("ABS_GF", "ABS-GF", ("Flashforge ABS-GF",), (r"abs[\s_-]*gf",), warps=True, warnings=(_ENCLOSURE, _FIBRE)),
     Material("ABS", "ABS", ("Flashforge ABS Basic",), (r"\babs\b",), warps=True, warnings=(_ENCLOSURE,)),
     Material("ASA_CF", "ASA-CF", ("Flashforge ASA-CF",), (r"asa[\s_-]*cf",), warps=True, warnings=(_ENCLOSURE, _FIBRE)),

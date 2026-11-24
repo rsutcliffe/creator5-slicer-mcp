@@ -167,6 +167,7 @@ def test_multi_colour_3mf_keeps_objects_parts_and_toolheads(fake_env, colour_3mf
     assert settings["inherits_group"] == [""] * 5
     assert any("toolhead 3 (#C89B3C)" in w for w in result["plan"]["warnings"])
     assert any("Dry the spool" in w for w in result["plan"]["warnings"])          # PETG's warning carried over
+    assert any("8 hours at 60 C" in w for w in result["plan"]["warnings"])        # with how long, so the dryer goes on in time
     assert settings["support_top_z_distance"] == "0.25"                           # and PETG's wider gap above supports
     assert not any("bed will run" in w for w in result["plan"]["warnings"])       # this fixture's presets share one bed temperature
     with zipfile.ZipFile(result["project_3mf"]) as archive:
