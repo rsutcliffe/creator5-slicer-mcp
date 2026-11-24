@@ -865,6 +865,11 @@ def open_in_slicer(path: str) -> dict:
 
 
 def main() -> None:
+    """Serve MCP on standard input and output, unless asked to check or remove the installation."""
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] in ("doctor", "uninstall"):
+        from . import doctor
+        raise SystemExit(doctor.main(sys.argv[1:]))
     mcp.run()
 
 

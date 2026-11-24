@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "creator5-slicer-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server that slices models for the Flashforge Creator 5 with OrcaSlicer, choosing quality, strength and filament settings for you."
 readme = "README.md"
 license = { text = "MIT" }
