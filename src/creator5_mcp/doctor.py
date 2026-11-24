@@ -38,6 +38,11 @@ def desktop_config() -> Path:
     return Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
 
 
+def skill_folder() -> Path:
+    """Where setup.sh puts the skill that tells Claude how to use the server."""
+    return Path.home() / ".claude" / "skills" / "creator5-slicer"
+
+
 def _entry(path: Path) -> dict | None:
     try:
         found = (json.loads(path.read_text(encoding="utf-8")).get("mcpServers") or {}).get(NAME)
@@ -83,6 +88,8 @@ def checks(code_config: Path | None = None) -> list[tuple[bool, str, str]]:
     for module, what, fix in (("PIL", "Pictures (Pillow)", SETUP), ("cascadio", "STEP files (cascadio)", SETUP)):
         found = importlib.util.find_spec(module) is not None
         out.append((found, f"{what}: installed" if found else f"{what}: not installed.", "" if found else fix))
+    skilled = (skill_folder() / "SKILL.md").is_file()
+    out.append((True, "Skill for Claude: installed." if skilled else "Skill for Claude: not installed. The server works without it; setup.sh adds it.", ""))
     here = _here()
     out.append((here.is_file(), f"This copy: version {__version__} at {here}" if here.is_file() else f"The server command is missing: {here}",
                 "" if here.is_file() else SETUP))
@@ -132,6 +139,11 @@ def uninstall() -> int:
         print("Removed from Claude Code." if done.returncode == 0 else "Claude Code: not connected, nothing to remove.")
     else:
         print("Claude Code: the claude command was not found, so nothing was changed there.")
+    skill = skill_folder()
+    if (skill / "SKILL.md").is_file():
+        (skill / "SKILL.md").unlink()
+        skill.rmdir()
+        print(f"Removed the skill from {skill}.")
     print(f"Your projects, print log and spools in {load_settings().output_dir} were left alone.")
     print("Quit and reopen Claude to finish.")
     return 0
