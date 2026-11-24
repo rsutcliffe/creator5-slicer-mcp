@@ -253,6 +253,14 @@ def convert_step(path: Path, out_dir: Path) -> Path:
     return out
 
 
+def write_stl(path: Path, tris: np.ndarray) -> Path:
+    """Triangles (n, 3, 3) in millimetres as a binary STL."""
+    flat = np.zeros(len(tris), dtype=[("normal", "<f4", 3), ("points", "<f4", 9), ("attribute", "<u2")])
+    flat["points"] = tris.reshape(-1, 9)
+    path.write_bytes(b"\0" * 80 + struct.pack("<I", len(tris)) + flat.tobytes())
+    return path
+
+
 def _join_touching(objects: list[dict], name: str) -> list[dict]:
     """In a plain 3MF, build items whose boxes overlap are parts of one thing (a logo set into a
     body), saved as separate items by a CAD tool. Joined into one object they cannot be moved apart
@@ -368,6 +376,21 @@ def thin_walls(tris: np.ndarray, limit: float, pairs: int = 40_000_000, gaps: bo
             "lowest_z": lowest, "sampled": step > 1}
 
 
+def object_shapes(loaded: dict) -> list[dict]:
+    """For each object as it stands: its height, the narrower side of its footprint, and how much of it rests on the bed."""
+    out = []
+    for obj in loaded["objects"]:
+        tris = np.concatenate([part["tris"] for part in obj["parts"]])
+        points = tris.reshape(-1, 3)
+        size = np.ptp(points, axis=0)
+        cross = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+        area = np.linalg.norm(cross, axis=1) / 2
+        resting = (tris[:, :, 2].min(axis=1) - points[:, 2].min() < 0.05) & (cross[:, 2] < -0.99 * 2 * np.where(area > 0, area, 1))
+        out.append({"name": obj["name"], "height_mm": round(float(size[2]), 1), "narrow_side_mm": round(float(min(size[0], size[1])), 1),
+                    "bed_contact_mm2": round(float(area[resting].sum()), 1)})
+    return out
+
+
 def designer_settings(path: Path) -> dict:
     """Shape-dependent settings saved in a 3MF by the slicer it was designed in, if any."""
     if path.suffix.lower() != ".3mf":
@@ -421,12 +444,14 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE, nozzle: fl
     total_area = float(area.sum())
     footprint_min = float(min(size[0], size[1]))
     fine, slots, sampled = [], [], False
+    # One allowance of ray tests for the whole model, shared out, so a plate of many parts is not searched part by part in full.
+    pairs = max(40_000_000 // max(sum(len(obj["parts"]) for obj in loaded["objects"]), 1), 3_000_000)
     for obj in loaded["objects"]:
         for part in obj["parts"]:
-            gap = thin_walls(part["tris"], nozzle, gaps=True)
+            gap = thin_walls(part["tris"], nozzle, pairs, gaps=True)
             if gap["area_mm2"] / 2 >= THIN_WALL_MM2:        # a slot has two walls, and both were counted
                 slots.append({"part": part["name"], "width_mm": gap["thickness_mm"], "area_mm2": round(gap["area_mm2"] / 2, 1)})
-            thin = thin_walls(part["tris"], 2 * nozzle)
+            thin = thin_walls(part["tris"], 2 * nozzle, pairs)
             sampled = sampled or gap["sampled"] or thin["sampled"]
             if thin["area_mm2"] >= THIN_WALL_MM2:
                 fine.append({"part": part["name"], "thickness_mm": thin["thickness_mm"], "area_mm2": thin["area_mm2"],

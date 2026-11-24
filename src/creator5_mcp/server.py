@@ -8,6 +8,7 @@ import re
 import subprocess
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 try:  # mcp 2.x
@@ -29,7 +30,7 @@ mcp = FastMCP(
         "and Print in Flash Studio. Pass auto_orient only when the user asks for it. Relay the returned "
         "warnings to the user. Each result carries print_check: whether the shape will print, how it stands "
         "against the best way up, and not_judged, what the file could not be measured for. Say what was not judged; "
-        "never call an unchecked part fine. sliced_check compares the G-code with the model: anything that starts "
+        "never call an unchecked part fine. print_risks names parts likely to topple or come off the plate. sliced_check compares the G-code with the model: anything that starts "
         "printing in mid-air, an object left out, a part printed smaller than modelled. slice_model also draws the plate (plate_png) and the first layer "
         "(first_layer_png): show the plate picture with every result, by calling preview with the project_3mf path, "
         "and the first layer when supports, a brim or fine detail matter. If the user gives figures from the spool's label, pass them as "
@@ -317,9 +318,18 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
     return plan, analysis
 
 
-def _print_check(target: Path, plan: dict, nozzle: str) -> dict:
-    """Check the shape that will print, with the plan's layer height and material, and add what it found to the plan's warnings."""
-    found = printcheck.check(target, float(nozzle), float(plan["layer_height_mm"]), plan["material"])
+_CHECKS = ThreadPoolExecutor(max_workers=1)     # the print check runs beside the slice, so it adds little to the wait
+
+
+def _print_check(target: Path, plan: dict, nozzle: str, wait: bool = True):
+    """Check the shape that will print, with the plan's layer height and material. With wait, add what it found
+    to the plan's warnings and return it; without, return the running check for _print_checked to collect."""
+    running = _CHECKS.submit(printcheck.check, target, float(nozzle), float(plan["layer_height_mm"]), plan["material"])
+    return _print_checked(running, plan) if wait else running
+
+
+def _print_checked(running, plan: dict) -> dict:
+    found = running.result()
     plan["warnings"] += [f"Print check: {text}" for text in found.get("errors", []) + found.get("warnings", [])]
     return found
 
@@ -497,7 +507,7 @@ def slice_model(
                                precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed, shape_path=shaped,
                                other_filaments=other_filaments, finish=finish)
         # A STEP is checked as the STEP, which is exact; a turned copy is checked as it now stands.
-        check = _print_check(source if converted and shaped == converted else shaped, plan, nozzle)
+        checking = _print_check(source if converted and shaped == converted else shaped, plan, nozzle, wait=False)
         made = project.write_project(profiles_dir, shaped, plan, job_dir / f"{name}.3mf", copies,
                                      process_overrides, filament_overrides, pause_before_z=pause_before_z)
         result = slicer.slice_project(settings, Path(made["project"]), job_dir)
@@ -545,10 +555,14 @@ def slice_model(
                 f"{analysis['support_angle']:g} degrees and will print over thin air. Turn supports on unless that is intended.")
         drawn = _draw(Path(made["project"]), Path(result["gcode"]), job_dir, result["notes"])
         sliced = _sliced(Path(made["project"]), Path(result["gcode"]), plan)
+        risks = recommend.print_risks(model.object_shapes(model.load_objects(Path(made["project"]))), made["settings"],
+                                      result["summary"].get("print_time_seconds", 0))
+        plan["warnings"] += [f"Print risk: {text}" for text in risks]
+        check = _print_checked(checking, plan)
         return {"ok": True, "project_3mf": made["project"], **result, **drawn, "objects": made["objects"],
                 "supports_on": supports_on, "support_sections_in_gcode": supports_printed, "pauses_at_z": paused_at,
                 "settings_checked_in_gcode": len(expected) - len(mismatched), "settings_mismatched": mismatched,
-                "plan": plan, "model": analysis, "print_check": check, "sliced_check": sliced}
+                "plan": plan, "model": analysis, "print_check": check, "sliced_check": sliced, "print_risks": risks}
     except _ERRORS as exc:
         return _fail(exc)
 

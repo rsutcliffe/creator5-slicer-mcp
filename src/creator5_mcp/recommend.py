@@ -133,6 +133,9 @@ QUALITY: dict[str, tuple[float, str]] = {
 FINISH = ("standard", "smooth")
 
 AUTO, ON, OFF = "auto", "on", "off"
+TOPPLE_RATIO, TOPPLE_MM = 5.0, 50.0   # height over the footprint's narrower side, and the height, above which a part may topple
+FOOTING_MM2 = 60.0                    # bed contact under which a part with no brim may come off (about 8 x 8 mm)
+CROWD_PARTS, CROWD_MM, CROWD_HOURS = 4, 50.0, 3.0   # this many parts this tall in a print this long put each other at risk
 OVERHANG_MM2 = 25.0   # unsupported underside, in mm², above which supports go on (about 5 x 5 mm)
 
 
@@ -435,3 +438,33 @@ def recommend(
         "rationale": rationale,
         "warnings": warnings,
     }
+
+
+def print_risks(shapes: list[dict], settings: dict, seconds: float = 0) -> list[str]:
+    """What may stop a sound part finishing: parts likely to topple or come off the plate, a filament not meant
+    for the plate, and tall parts sharing a long print. shapes are model.object_shapes of the project, one for
+    each copy; settings are the project's. The thresholds are starting points, not measured on the Creator 5."""
+    brim = str(settings.get("brim_type") or "no_brim") != "no_brim"
+    said, out = set(), []
+    for shape in shapes:
+        if shape["name"] in said:
+            continue                  # copies of one object get one warning
+        ratio = shape["height_mm"] / shape["narrow_side_mm"] if shape["narrow_side_mm"] else 0.0
+        if ratio >= TOPPLE_RATIO and shape["height_mm"] >= TOPPLE_MM:
+            said.add(shape["name"])
+            out.append(f"'{shape['name']}' is tall and narrow: {shape['height_mm']:g} mm high on a footing {shape['narrow_side_mm']:g} mm "
+                       f"wide. It can rock as the nozzle passes near the top. " + ("A brim is on, which helps hold its foot."
+                       if brim else "Turn the brim on, lay the part down, or print it more slowly."))
+        elif not brim and 0 < shape["bed_contact_mm2"] < FOOTING_MM2:
+            said.add(shape["name"])
+            out.append(f"'{shape['name']}' rests on only {shape['bed_contact_mm2']:g} mm² of the plate and the brim is off. "
+                       "It may come off part-way through. Turn the brim on.")
+    cold = [str(i + 1) for i, value in enumerate(settings.get("textured_plate_temp") or []) if float(value or 0) == 0]
+    if cold:
+        out.append(f"The filament in toolhead {' and '.join(cold)} has no temperature for the textured plate, so its preset is not "
+                   "meant for this plate and the bed would stay cold. Choose another filament preset or pass bed_temp.")
+    tall = [shape for shape in shapes if shape["height_mm"] >= CROWD_MM]
+    if len(tall) >= CROWD_PARTS and seconds >= CROWD_HOURS * 3600:
+        out.append(f"{len(tall)} parts up to {max(s['height_mm'] for s in tall):g} mm tall share one {seconds / 3600:.1f} hour print. "
+                   "If one comes off late it can knock the others over. Print fewer at a time.")
+    return out
