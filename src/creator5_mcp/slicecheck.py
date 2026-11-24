@@ -5,9 +5,9 @@ plastic goes: a feature that starts with nothing under it, an object the slicer 
 printed smaller than its model, a print that stops short. Flash Studio writes no per-object markers
 (`exclude_object = 0`), so objects are told apart by where the project placed them.
 
-Mid-air starts are found on a grid of half-millimetre cells over the bed, every layer. Outlines are
-compared on quarter-millimetre cells, at a few heights, so detail down to about 0.3 mm is seen and
-anything finer is not.
+Mid-air starts are found on a grid of half-millimetre cells around the objects, every layer.
+Outlines are compared on eighth-millimetre cells around each object, at a few heights, so detail
+down to about 0.3 mm is seen.
 """
 
 from __future__ import annotations
@@ -21,23 +21,30 @@ from PIL import Image, ImageDraw, ImageFilter
 from . import model, slicer
 
 CELL = 0.5                                  # mm per grid cell, for the mid-air search on every layer
-FINE = 0.25                                 # mm per grid cell, for comparing outlines at a few heights
+FINE = 0.125                                # mm per grid cell, for comparing outlines at a few heights
+AROUND_MM = 12.0                            # how far around the objects the mid-air search looks, for supports and brims
 NOT_PART = ("support", "brim", "skirt", "prime tower", "wipe tower")   # printed, but not the part
 UNDER_MM = 1.0                              # material within this distance on the layer below counts as support
 MID_AIR_MM2 = 1.0                           # the smallest island worth reporting
 EDGE_MM = 0.5                               # the model's outline is the band this deep inside its cross-section
-SMALLER_MM2 = 1.0                           # outline with no line near it, in mm2 ...
-SMALLER_SHARE = 0.10                        # ... and as a share of the outline, before it is worth reporting
+SMALLER_MM2 = 0.75                          # outline with no line near it, before it is worth reporting
 SHORT_MM = 0.6                              # how far below the model's top the last layer may end
 HEIGHTS = (0.25, 0.5, 0.75)                 # where, up a part's height, its cross-section is compared (and at the first layer)
 
 
-def _raster(moves: list[tuple], cell: float = CELL, width: int = 1) -> np.ndarray:
-    side = int(model.BED_X / cell)
-    image = Image.new("L", (side, side), 0)
+def _window(lo, hi, margin: float, cell: float) -> tuple[float, float, int, int]:
+    """A grid over the rectangle lo to hi plus a margin, kept on the bed: (x origin, y origin, rows, columns)."""
+    x0, y0 = max(float(lo[0]) - margin, 0.0), max(float(lo[1]) - margin, 0.0)
+    x1, y1 = min(float(hi[0]) + margin, model.BED_X), min(float(hi[1]) + margin, model.BED_Y)
+    return x0, y0, max(int((y1 - y0) / cell) + 1, 1), max(int((x1 - x0) / cell) + 1, 1)
+
+
+def _raster(moves: list[tuple], window: tuple, cell: float, width: int = 1) -> np.ndarray:
+    ox, oy, rows, cols = window
+    image = Image.new("L", (cols, rows), 0)
     draw = ImageDraw.Draw(image)
     for x0, y0, x1, y1 in moves:
-        draw.line([(x0 / cell, y0 / cell), (x1 / cell, y1 / cell)], fill=255, width=width)
+        draw.line([((x0 - ox) / cell, (y0 - oy) / cell), ((x1 - ox) / cell, (y1 - oy) / cell)], fill=255, width=width)
     return np.asarray(image) > 0
 
 
@@ -61,11 +68,11 @@ def _reach(seed: np.ndarray, within: np.ndarray) -> np.ndarray:
         reached = wider
 
 
-def _section(tris: np.ndarray, z: float, cell: float = FINE) -> np.ndarray | None:
+def _section(tris: np.ndarray, z: float, window: tuple, cell: float = FINE) -> np.ndarray | None:
     """The filled cross-section of a mesh at height z, on the grid. None where the mesh is open there, so it
     has no inside to fill. Shells that overlap, as generated meshes often do, are filled as one."""
-    side = int(model.BED_X / cell)
-    out = np.zeros((side, side), bool)
+    ox, oy, rows, cols = window
+    out = np.zeros((rows, cols), bool)
     z += 1.234e-3                             # off any vertex, so every crossing triangle is cut in exactly two edges
     crossing = tris[(tris[:, :, 2].min(axis=1) < z) & (tris[:, :, 2].max(axis=1) > z)]
     if not len(crossing):
@@ -81,7 +88,7 @@ def _section(tris: np.ndarray, z: float, cell: float = FINE) -> np.ndarray | Non
     points = np.stack([e[1] for e in ends], axis=1)
     two = cuts.sum(axis=1) == 2
     order = np.argsort(~cuts[two], axis=1, kind="stable")[:, :2]            # the two edges that were cut
-    seg = np.take_along_axis(points[two], order[:, :, None], axis=1) / cell  # (n, 2, 2), in cells
+    seg = (np.take_along_axis(points[two], order[:, :, None], axis=1) - [ox, oy]) / cell   # (n, 2, 2), in cells
     # Each cut runs with the inside on its left, by its triangle's normal, so overlapping shells add up.
     along = seg[:, 1] - seg[:, 0]
     flip = along[:, 0] * -normal[two, 1] + along[:, 1] * normal[two, 0] < 0
@@ -91,7 +98,7 @@ def _section(tris: np.ndarray, z: float, cell: float = FINE) -> np.ndarray | Non
     if (times % 2).mean() > 0.02:
         return None
     x0, y0, x1, y1 = seg[:, 0, 0], seg[:, 0, 1], seg[:, 1, 0], seg[:, 1, 1]
-    lo, hi = max(int(min(y0.min(), y1.min())), 0), min(int(max(y0.max(), y1.max())) + 1, side)
+    lo, hi = max(int(min(y0.min(), y1.min())), 0), min(int(max(y0.max(), y1.max())) + 1, rows)
     for row in range(lo, hi):
         y = row + 0.5
         hit = (y0 <= y) != (y1 <= y)
@@ -101,7 +108,7 @@ def _section(tris: np.ndarray, z: float, cell: float = FINE) -> np.ndarray | Non
             inside = np.cumsum(np.where(y1[hit] > y0[hit], -1, 1)[order])   # how many surfaces we are inside, going right
             for left, right, deep in zip(xs[order], xs[order][1:], inside):
                 if deep:
-                    out[row, max(int(round(left)), 0):min(int(round(right)), side)] = True
+                    out[row, max(int(round(left)), 0):min(int(round(right)), cols)] = True
     return out
 
 
@@ -125,6 +132,7 @@ def check(project: Path, gcode: Path) -> dict:
     for obj in loaded["objects"]:
         points = np.concatenate([part["tris"].reshape(-1, 3) for part in obj["parts"]])
         entry = {"name": obj["name"], "lo": points.min(axis=0), "hi": points.max(axis=0)}
+        near = _window(entry["lo"], entry["hi"], 2.0, FINE)
         objects.append(entry)
         tools = {}
         for part in obj["parts"]:
@@ -140,17 +148,18 @@ def check(project: Path, gcode: Path) -> dict:
             pts = np.concatenate([t.reshape(-1, 3) for t in parts])
             low, high = float(pts[:, 2].min()), float(pts[:, 2].max())
             for share in (None, *HEIGHTS):
-                wanted.append({"object": obj["name"], "tool": tool, "parts": parts, "first": share is None,
+                wanted.append({"object": obj["name"], "tool": tool, "parts": parts, "first": share is None, "window": near,
                                "z": low + (high - low) * (share or 0.0), "done": False})
     top = float(max(obj["hi"][2] for obj in objects))
     mid_air, smaller, open_meshes = [], [], set()
-    ever = np.zeros((int(model.BED_X / CELL),) * 2, bool)
+    field = _window(np.min([o["lo"] for o in objects], axis=0), np.max([o["hi"] for o in objects], axis=0), AROUND_MM, CELL)
+    ever = np.zeros(field[2:], bool)
     below = None
     count, height, last = 0, 0.0, 0.0
     for count, height, moves in slicer.layers(gcode):
         part_moves = [m for m in moves if not any(word in m[5].lower() for word in NOT_PART)]
-        part = _raster([m[:4] for m in part_moves])
-        every = part | _raster([m[:4] for m in moves if any(word in m[5].lower() for word in NOT_PART)])
+        part = _raster([m[:4] for m in part_moves], field, CELL)
+        every = part | _raster([m[:4] for m in moves if any(word in m[5].lower() for word in NOT_PART)], field, CELL)
         ever |= part
         if below is not None and part.any():
             held = _grow(below, round(UNDER_MM / CELL))
@@ -166,7 +175,7 @@ def check(project: Path, gcode: Path) -> dict:
                     loose &= ~island
                     area = float(island.sum()) * CELL * CELL
                     if area >= MID_AIR_MM2:
-                        at = (np.argwhere(island).mean(axis=0) + [rows.start, cols.start]) * CELL
+                        at = (np.argwhere(island).mean(axis=0) + [rows.start, cols.start]) * CELL + [field[1], field[0]]
                         mid_air.append({"object": _where(objects, at[1], at[0]), "z": round(height, 2),
                                         "x": round(float(at[1]), 1), "y": round(float(at[0]), 1), "area_mm2": round(area, 1)})
         for want in wanted:
@@ -174,29 +183,27 @@ def check(project: Path, gcode: Path) -> dict:
             if want["done"] or (not want["first"] and height < want["z"]) or (want["first"] and height <= want["z"]):
                 continue
             want["done"] = True
-            modelled = np.zeros((int(model.BED_X / FINE),) * 2, bool)
-            sections = [_section(tris, layer_mid) for tris in want["parts"]]
+            sections = [_section(tris, layer_mid, want["window"]) for tris in want["parts"]]
             if any(section is None for section in sections):
                 open_meshes.add(want["object"])
                 continue
-            for section in sections:
-                modelled |= section
+            modelled = np.any(sections, axis=0)
             if not modelled.any():
                 continue
             # Walls follow the outline, so every part of the outline should have a line beside it. Sparse infill
             # leaves the inside open, so only the outline is compared.
             outline = modelled & ~_grow(modelled, round(EDGE_MM / FINE), shrink=True)
-            lines = _raster([m[:4] for m in part_moves if want["tool"] is None or m[4] == want["tool"]], FINE, 2)
-            missing = float((outline & ~_grow(lines, 1)).sum()) * FINE * FINE
+            lines = _raster([m[:4] for m in part_moves if want["tool"] is None or m[4] == want["tool"]], want["window"], FINE, 4)
+            missing = float((outline & ~_grow(lines, 2)).sum()) * FINE * FINE
             whole = float(outline.sum()) * FINE * FINE
-            if missing >= SMALLER_MM2 and missing >= SMALLER_SHARE * whole:
+            if missing >= SMALLER_MM2:
                 smaller.append({"object": want["object"], "toolhead": None if want["tool"] is None else want["tool"] + 1,
                                 "z": round(height, 2), "outline_mm2": round(whole, 1), "missing_mm2": round(missing, 1)})
         below, last = every, height
     left_out = []
     for obj in objects:
-        rows = slice(int(obj["lo"][1] / CELL), int(obj["hi"][1] / CELL) + 1)
-        cols = slice(int(obj["lo"][0] / CELL), int(obj["hi"][0] / CELL) + 1)
+        rows = slice(int((obj["lo"][1] - field[1]) / CELL), int((obj["hi"][1] - field[1]) / CELL) + 1)
+        cols = slice(int((obj["lo"][0] - field[0]) / CELL), int((obj["hi"][0] - field[0]) / CELL) + 1)
         if not ever[rows, cols].any():
             left_out.append(obj["name"])
     short = round(top - height, 2) if top - height > SHORT_MM else None

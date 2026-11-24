@@ -805,3 +805,40 @@ def test_printer_status_is_read_only_and_says_what_to_do_when_it_cannot_read(mon
     assert printer.ENDPOINT == "/detail" and source.count("ENDPOINT") == 2
     for forbidden in ("/control", "/printGcode", "/uploadGcode", "/gcodeList", "/gcodeThumb", "/notifyWanBind", "/product", "/checkCode"):
         assert forbidden not in source, forbidden
+
+
+def test_print_risks_name_the_parts_likely_to_topple_or_come_off(fake_env, cube_stl, tmp_path):
+    from conftest import _stl, box_triangles
+    from creator5_mcp import recommend
+    post = _stl(tmp_path / "post.stl", box_triangles(8, 8, 60))
+    bare = server.slice_model(str(post), "PLA", brim="off")
+    assert bare["print_risks"] and "'post' is tall and narrow: 60 mm high on a footing 8 mm wide" in bare["print_risks"][0]
+    assert "Turn the brim on" in bare["print_risks"][0] and any(w.startswith("Print risk: 'post'") for w in bare["plan"]["warnings"])
+    assert "A brim is on" in server.slice_model(str(post), "PLA", brim="on")["print_risks"][0]
+    # A low wide part says nothing; a small one with no brim may come off; with a brim it is left alone.
+    assert server.slice_model(str(cube_stl), "PLA", brim="off")["print_risks"] == []
+    peg = _stl(tmp_path / "peg.stl", box_triangles(5, 5, 10))
+    assert "rests on only 25 mm² of the plate and the brim is off" in server.slice_model(str(peg), "PLA", brim="off")["print_risks"][0]
+    assert server.slice_model(str(peg), "PLA", brim="on")["print_risks"] == []
+    # A filament with no temperature for the plate in use.
+    cold = server.slice_model(str(cube_stl), "PLA", filament_overrides={"textured_plate_temp": 0})
+    assert any("toolhead 1 has no temperature for the textured plate" in risk for risk in cold["print_risks"])
+    # Four tall parts in a long print, and the same four in a short one.
+    shapes = [{"name": f"tower {i}", "height_mm": 80.0, "narrow_side_mm": 30.0, "bed_contact_mm2": 900.0} for i in range(4)]
+    assert "4 parts up to 80 mm tall share one 5.0 hour print" in recommend.print_risks(shapes, {"brim_type": "outer_only"}, 18000)[0]
+    assert recommend.print_risks(shapes, {"brim_type": "outer_only"}, 3600) == []
+
+
+def test_a_rib_the_gcode_leaves_out_is_found_at_a_third_of_a_millimetre(fake_env, tmp_path):
+    from conftest import _stl, box_triangles
+    from creator5_mcp import model, slicecheck
+    rib = [[(x + 20, y + 5, z) for x, y, z in tri] for tri in box_triangles(10, 0.3, 4)]       # a 0.3 mm rib beside a block
+    project = Path(server.slice_model(str(_stl(tmp_path / "ribbed.stl", box_triangles(20, 10, 4) + rib)), "PLA")["project_3mf"])
+    points = model.load_objects(project)["objects"][0]["parts"][0]["tris"].reshape(-1, 3)
+    x0, y0 = points[:, 0].min(), points[:, 1].min()
+    block = _ring(x0 + 0.2, y0 + 0.2, x0 + 19.8, y0 + 9.8)
+    line = f"G1 X{x0 + 20} Y{y0 + 5.15}\nG1 X{x0 + 30} Y{y0 + 5.15} E1\n"
+    with_rib = slicecheck.check(project, _gcode(tmp_path / "with.gcode", [[("Outer wall", 0, block + line)]] * 20))
+    without = slicecheck.check(project, _gcode(tmp_path / "without.gcode", [[("Outer wall", 0, block)]] * 20))
+    assert with_rib["smaller"] == [] and with_rib["warnings"] == []
+    assert without["smaller"] and 1.5 < without["smaller"][0]["missing_mm2"] < 4 and "prints smaller than its model" in without["warnings"][0]

@@ -157,13 +157,17 @@ The plate is drawn from the project, so it shows what Flash Studio will open. A 
 - Anyone with the check code on your network could control the printer. Change it on the printer if it has been shared.
 - macOS only for now. Not yet proven against a real printer: see the handover.
 
+## Print risks
+
+`slice_model` returns `print_risks`: what may stop a sound part finishing. A part that is tall on a narrow footing, a part resting on little of the plate with the brim off, a filament whose preset has no temperature for the textured plate, and several tall parts sharing a long print. Each warning names the object. The thresholds are starting points, not measured on the Creator 5.
+
 ## The sliced check
 
 `slice_model` also returns `sliced_check`, which compares the G-code with the model, from the toolpath and not the settings:
 
 - **Starts in mid-air:** plastic with nothing printed under it that joins nothing on its own layer, with the object, height and place. Overhangs and bridges are joined to the part, so they are left to the print check.
 - **Left out:** an object in the project that the G-code never prints.
-- **Printed smaller than modelled:** part of an object's outline, or of one toolhead's parts, has no line beside it. This catches a part printed by the wrong toolhead and detail the slicer dropped, down to about 0.3 mm.
+- **Printed smaller than modelled:** part of an object's outline, or of one toolhead's parts, has no line beside it. This catches a part printed by the wrong toolhead and detail the slicer dropped, down to about 0.3 mm (outlines are compared on a 0.125 mm grid).
 - **Stops short:** the last layer ends below the model's top.
 
 Findings join the plan's warnings as `Sliced check: ...`. A mesh that is open at a height cannot be compared, and `not_judged` says so.
@@ -174,6 +178,7 @@ Findings join the plan's warnings as `Sliced check: ...`. A mesh that is open at
 
 - `not_judged` lists what the file could not be measured for. A mesh (STL, 3MF) is sampled and holds no holes, pins or lettering to judge; a STEP is measured exactly (`exact` is true).
 - An exact check that takes longer than 60 seconds gives way to a check of a mesh of the same STEP, and the result says so.
+- A file of several parts is checked a part at a time inside 30 seconds. A part that is not reached, such as lettering made of many small bodies, is named in `not_judged`.
 - A part that stands another way up with much less support gets a warning naming the rotation. Nothing is turned unless `auto_orient` is passed.
 - `checked: false` means nothing was judged, with the reason. It is never a pass. OBJ files are not checked.
 
