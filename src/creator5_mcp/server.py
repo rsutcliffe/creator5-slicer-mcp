@@ -587,7 +587,7 @@ def _draw(project: Path, gcode: Path, job_dir: Path, notes: list[str]) -> dict:
     """Write the plate and first-layer pictures beside the project. A picture that fails is a note, never a failed slice."""
     out = {"plate_png": None, "first_layer_png": None}
     try:
-        png, said = pictures.plate_png(project)
+        png, said = pictures.plate_png(project, zoom=pictures.fills_little(project))     # small parts fill the picture
         (job_dir / "plate.png").write_bytes(png)
         out["plate_png"] = str(job_dir / "plate.png")
         notes += said
@@ -599,23 +599,24 @@ def _draw(project: Path, gcode: Path, job_dir: Path, notes: list[str]) -> dict:
 
 
 @mcp.tool()
-def preview(project_3mf: str, view: str = "iso", layer: int = 0, z: float = 0):
+def preview(project_3mf: str, view: str = "iso", layer: int = 0, z: float = 0, zoom: bool = False):
     """A picture of what slice_model made: the plate, or one sliced layer seen from above.
 
-    With no layer and no z, the plate: the bed and every part in its toolhead's colour, as the project
-    file holds it. With layer or z, that layer of the job's G-code: each extrusion in its toolhead's
+    With no layer and no z, the plate: the bed and every part in its toolhead's colour, painted faces in
+    their painted colours, as the project file holds it. With layer or z, that layer of the job's G-code: each extrusion in its toolhead's
     colour, with supports, brim and skirt paler. Show the plate after every slice.
 
     Args:
         project_3mf: The project_3mf path slice_model returned.
         view: For the plate: iso (from the front left, looking down) or top.
+        zoom: For the plate: True frames the parts, False shows the whole bed and where they stand on it.
         layer: Layer number, 1 for the first. 0 for the plate.
         z: Height in mm, instead of a layer number: the first layer whose top is at or above it.
     """
     try:
         target = _path(project_3mf)
         if not layer and not z:
-            return Image(data=pictures.plate_png(target, view)[0], format="png")
+            return Image(data=pictures.plate_png(target, view, zoom=zoom)[0], format="png")
         gcodes = sorted(target.parent.glob("*.gcode"))
         if not gcodes:
             return _fail(FileNotFoundError(f"No G-code beside {target.name}. Slice the model with slice_model first."))

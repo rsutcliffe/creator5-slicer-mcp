@@ -145,7 +145,7 @@ When a print is done, say how it went. `record_print_result` keeps the outcome w
 
 Every `slice_model` result has `plate_png` and `first_layer_png`: the plate as the project file holds it, each part in its toolhead's colour, and the first sliced layer from above with supports, brim and skirt drawn paler. The `preview` tool returns either picture to the chat, the plate from an angle or from above, and any layer by number or height.
 
-The plate is drawn from the project, so it shows what Flash Studio will open. A layer is drawn from the G-code, so it shows what will print. A model painted in fine detail is drawn in its part's colour, and the result says so.
+The plate is drawn from the project, so it shows what Flash Studio will open, with colour-painted faces in the colours they were painted. When the parts cover under a quarter of the bed the picture frames them; `preview` takes `zoom` to choose. A layer is drawn from the G-code, so it shows what will print.
 
 ## Printer status
 
