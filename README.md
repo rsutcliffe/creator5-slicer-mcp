@@ -14,7 +14,7 @@ Before it hands the project over, it checks its own work:
 
 It is a thin layer over the slicer's own command line. It is not a fork of OrcaSlicer, so there is no C++ to build and slicer updates need no merging. It never sends anything to the printer.
 
-> **Status: early, version 0.3.0.** Tested with Flash Studio 1.7.22 on macOS. Proven there: choosing settings, writing and slicing projects for single and four-colour models, opening them in Flash Studio, and each check above against Flash Studio's own G-code. Four prints have been recorded: two good and two acceptable. Not yet proven: the flow test on a printer, printer status against a real Creator 5, and the Claude Desktop bundle. [docs/HANDOVER.md](docs/HANDOVER.md) lists what is proven and what is not.
+> **Status: early, version 0.3.0.** Tested with Flash Studio 1.7.22 on macOS. Proven there: choosing settings, writing and slicing projects for single and four-colour models, opening them in Flash Studio, and each check above against Flash Studio's own G-code. Four prints have been recorded: two good and two acceptable. Not yet proven: the calibration tests on a printer, reading status from a real Creator 5 (finding it is proven), and the Claude Desktop bundle. [docs/HANDOVER.md](docs/HANDOVER.md) lists what is proven and what is not.
 
 ## Contents
 
@@ -316,7 +316,7 @@ Change a number, run `cad run build_rawlplug.py` in the model's folder (with `ca
 - On stock firmware the printer answers only in **LAN-only mode**, set on its network screen. LAN-only mode turns the Flashforge cloud off, so the phone app and cloud printing stop until it is turned back. In cloud mode the tool still finds the printer and says so.
 - The printer asks for its **check code**, shown on the same screen. Store it once in the Mac's Keychain with the command the tool prints; it asks for the code, and the code is never written to a file or shown in a reply. To remove it: `security delete-generic-password -s creator5-slicer-mcp-printer -a SERIAL`.
 - Anyone with the check code on your network could control the printer. Change it on the printer if it has been shared.
-- macOS only for now. Not yet proven against a real printer: see the handover.
+- macOS only for now. Finding the printer is proven on a real Creator 5; reading its status is not yet, because that printer is in cloud mode. See the handover.
 
 ## From the terminal
 

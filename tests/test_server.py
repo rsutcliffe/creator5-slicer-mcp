@@ -784,6 +784,14 @@ def test_printer_status_is_read_only_and_says_what_to_do_when_it_cannot_read(mon
         monkeypatch.undo()
     finally:
         stop()
+    # Cloud mode and no code stored: the probe's own answer is enough to say why status cannot be read, with nothing more sent.
+    probes, asked, stop = _fake_printer({"code": -2, "message": "Lan mode error"}, mode=1)
+    try:
+        unasked = printer.status(0.5, probes, code_for=lambda serial: None)
+        assert unasked["mode"] == "cloud" and asked == [] and unasked["message"].startswith("The printer was found, and it is in cloud mode")
+        assert "turns the Flashforge cloud off" in unasked["message"] and "security add-generic-password" in unasked["message"]
+    finally:
+        stop()
     # Cloud mode: the printer refuses with code -2, and the answer says what LAN-only mode costs.
     probes, asked, stop = _fake_printer({"code": -2, "message": "Lan mode error"}, mode=1, pid=41)
     try:
