@@ -215,3 +215,18 @@ def test_each_flow_test_tube_prints_at_its_own_flow_in_flash_studios_gcode(real_
     gcode = Path(made["gcode"]).read_text(errors="ignore")
     assert "; filament_max_volumetric_speed = 200" in gcode and "; wall_loops = 1" in gcode and ";TYPE:Brim" in gcode
     assert Path(made["plate_png"]).is_file()
+
+
+def test_tower_commands_land_on_the_right_layer_in_flash_studios_gcode(real_env):
+    from creator5_mcp import server, towers
+    hot = server.temperature_test("PLA", hottest=220, coolest=200, step=10)
+    assert hot["ok"] and not any("Do not print" in w for w in hot["warnings"]), hot
+    assert towers.commands(Path(hot["gcode"]), "M104") == [(8.8, "M104 S210"), (16.8, "M104 S200")]
+    assert "M109 S220" in Path(hot["gcode"]).read_text(errors="ignore")            # the first block prints at the hottest
+    # With no range given, the preset's own: Flashforge PLA Basic says 190 to 240 C.
+    assert [b["value"] for b in server.temperature_test("PLA")["blocks"]] == [240, 235, 230, 225, 220, 215, 210, 205, 200, 195, 190]
+    tube = server.pressure_advance_test("PETG", start=0.0, end=0.06, step=0.02)
+    assert tube["ok"] and not any("Do not print" in w for w in tube["warnings"]), tube
+    assert towers.commands(Path(tube["gcode"]), "SET_PRESSURE_ADVANCE")[-3:] == \
+        [(4.2, "SET_PRESSURE_ADVANCE ADVANCE=0.02"), (8.2, "SET_PRESSURE_ADVANCE ADVANCE=0.04"), (12.2, "SET_PRESSURE_ADVANCE ADVANCE=0.06")]
+    assert Path(tube["plate_png"]).is_file() and Path(hot["plate_png"]).is_file()

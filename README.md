@@ -163,6 +163,8 @@ It then opens the project in Flash Studio. Press Slice, then Print.
 | `save_spool` | Remembers a spool and its label figures under a name |
 | `flow_test` | Writes a test print of tubes at rising flow, to find a spool's flow limit |
 | `record_flow_test` | Saves the flow of the last good tube as the spool's limit |
+| `temperature_test`, `record_temperature_test` | A tower that cools block by block, and saving the best block's temperature to the spool |
+| `pressure_advance_test`, `record_pressure_advance_test` | A tube whose pressure advance rises block by block, and saving the best block's value to the spool |
 
 **After a print**
 
@@ -256,6 +258,13 @@ A spool's real limit is how much plastic it can melt each second. Without a meas
 
 Each tube's flow is confirmed in the G-code before the project is handed over, and nothing is changed on the printer. The test itself has not been printed yet.
 
+Two more tests tune a spool the same way, each a tower that changes one thing block by block:
+
+- **`temperature_test`**: hottest at the bottom, cooling as it rises, over the filament preset's own range unless you give one. Each block is two posts with a bridge across the top. Pick the block with clean walls, few strings and a flat bridge; `record_temperature_test` saves its temperature to the spool.
+- **`pressure_advance_test`**: a square tube, pressure advance rising from the bottom, with a tick on the front face at each block. Pick the block with sharp corners and no bulge or gap; `record_pressure_advance_test` saves its value, and later slices with that spool use it in place of the preset's.
+
+Each block's command is confirmed in the G-code at the block's first layer. The next print sets temperature and pressure advance afresh, so a test stopped half-way leaves nothing behind. Neither tower has been printed yet.
+
 ## After a print
 
 When a print is done, say how it went. `record_print_result` keeps the outcome with the project's presets and changed settings in `print_results.json` in the output folder, and later slices with the same filament or model are told about it. If you edited the project in Flash Studio and saved it, pass that file too: what you changed by hand is recorded alongside.
@@ -292,7 +301,12 @@ A downloaded project often carries its designer's setup:
 
 ### Models written as code
 
-`models/dualsense_hook/build_hook.py` is a part written with [build123d](https://github.com/gumyr/build123d): named dimensions at the top, an exact solid, a STEP file out. Change a number, run `cad run build_hook.py` in that folder (with `cad server start` before and `cad server stop` after), and give the STEP to `slice_model`.
+Two parts are written with [build123d](https://github.com/gumyr/build123d): named dimensions at the top, an exact solid, a STEP file out.
+
+- `models/rawlplug/build_rawlplug.py`: a wall plug for a 7 mm hole, 30 mm long, for 4 to 5 mm screws. It prints standing on its collar with no supports; two take 21 minutes and 2.3 g in PETG.
+- `models/dualsense_hook/build_hook.py`: a wall hook for a game controller.
+
+Change a number, run `cad run build_rawlplug.py` in the model's folder (with `cad server start` before and `cad server stop` after), and give the STEP to `slice_model`.
 
 ## Printer status
 
