@@ -89,6 +89,8 @@ python3 -m venv .venv
 | `printer_status` | Reads the printer's state, progress, temperatures and loaded filament over the home network. Read-only |
 | `reprint_objects` | Writes a project of only the named objects of a sliced plate, with a brim, to reprint parts that failed |
 | `compare_settings` | Slices a model twice with two levels of quality or strength and gives the time, filament and settings that differ |
+| `flow_test` | Writes a test print of tubes at rising flow, to find a spool's flow limit |
+| `record_flow_test` | Saves the flow of the last good tube as the spool's limit |
 | `recommend_settings` | Returns the chosen presets and settings with reasons, without slicing |
 | `slice_model` | Analyses, chooses settings, writes the project, slices it, and confirms each setting reached the G-code |
 | `open_in_slicer` | Opens the project in a new Flash Studio window, ready for Slice and Print |
@@ -189,6 +191,12 @@ The check is the `cad` command from [text-to-cad](https://github.com/earthtojake
 ## Models written as code
 
 `models/dualsense_hook/build_hook.py` is a part written with [build123d](https://github.com/gumyr/build123d): named dimensions at the top, an exact solid, a STEP file out. Change a number, run `cad run build_hook.py` in that folder (with `cad server start` before and `cad server stop` after), and give the STEP to `slice_model`.
+
+## Flow test
+
+`flow_test` writes a short test print that finds a spool's real flow limit: how much plastic it can melt each second. The plate holds one tube for each flow, 5 to 25 mm³/s by default, slowest at the front left, rising left to right and then row by row to the back. Print it, find the last tube whose wall is smooth and full, and give its number to `record_flow_test`, which saves that flow as the spool's limit. Nine tubes take about 20 minutes and 14 g.
+
+Each tube's flow is checked in the G-code before the project is handed over. Nothing is changed on the printer. The test itself has not been printed yet.
 
 ## Reprinting parts that failed
 

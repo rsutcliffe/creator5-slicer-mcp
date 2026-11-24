@@ -315,7 +315,7 @@ def test_tools_over_real_stdio_transport(fake_env, cube_stl):
     names, payload = asyncio.run(run())
     assert names == {"check_setup", "list_filaments", "analyse_model", "recommend_settings", "slice_model",
                      "open_in_slicer", "save_spool", "record_print_result", "compare_with_saved_project",
-                     "check_flash_studio_slice", "preview", "printer_status", "reprint_objects", "compare_settings"}
+                     "check_flash_studio_slice", "preview", "printer_status", "reprint_objects", "compare_settings", "flow_test", "record_flow_test"}
     assert payload["ok"] and payload["summary"]["print_time"] == "1h 23m"
 
 
@@ -921,3 +921,35 @@ def test_failed_parts_are_reprinted_alone_and_two_slices_are_compared(fake_env, 
     assert "sparse_infill_density" in compared["settings_that_differ"] and compared["a"]["project_3mf"] != compared["b"]["project_3mf"]
     assert set(compared["b_against_a"]) == {"seconds", "minutes", "filament_g", "layers"}
     assert server.compare_settings(str(cube_stl), "nonsense filament")["ok"] is False
+
+
+def test_a_flow_test_is_a_plate_of_tubes_and_its_result_becomes_the_spools_limit(fake_env, cube_stl):
+    import zipfile
+    from creator5_mcp import flowtest
+    server.save_spool("black pla", "Creality Ender PLA", nozzle_temp=215, bed_temp=60, max_speed=80, colour="black")
+    made = server.flow_test("black pla")
+    assert made["ok"], made
+    assert [t["flow_mm3_s"] for t in made["tubes"]] == [5.0, 7.5, 10.0, 12.5, 15.0, 17.5, 20.0, 22.5, 25.0]
+    with zipfile.ZipFile(made["project_3mf"]) as archive:
+        settings = json.loads(archive.read("Metadata/project_settings.config"))
+        objects = archive.read("Metadata/model_settings.config").decode()
+    # The recipe: one wall of a wide thick line, nothing inside, the flow cap lifted, the spool's own temperature kept.
+    assert (settings["wall_loops"], settings["sparse_infill_density"], settings["top_shell_layers"]) == ("1", "0%", "0")
+    assert (settings["outer_wall_line_width"], settings["layer_height"]) == ("0.7", "0.28")
+    assert settings["filament_max_volumetric_speed"] == ["200"] and settings["nozzle_temperature"] == ["215"]
+    # Each tube carries its own wall speed: flow over the line's cross-section, 0.7 x 0.28 mm.
+    assert objects.count('key="outer_wall_speed"') == 9
+    assert 'value="Flow 5"' in objects and 'value="25.5"' in objects and 'value="Flow 25"' in objects and 'value="127.6"' in objects
+    # The fake slicer prints no tubes, so the test is refused rather than trusted.
+    assert all(t["flow_in_gcode"] is None for t in made["tubes"]) and any("Do not print it" in w for w in made["warnings"])
+    # The fifth tube was the last good one: 15 mm3/s becomes the spool's limit, and its label figures are kept.
+    saved = server.record_flow_test("black pla", made["project_3mf"], 5)
+    assert saved["ok"] and saved["flow_limit_mm3_s"] == 15.0 and saved["spool"]["max_flow"] == 15.0 and saved["spool"]["nozzle_temp"] == 215
+    assert server.record_flow_test("black pla", made["project_3mf"], 9)["note"].startswith("Every tube was good")
+    assert "tubes 1 to 9" in server.record_flow_test("black pla", made["project_3mf"], 10)["error"]
+    assert "No spool called" in server.record_flow_test("mystery", made["project_3mf"], 3)["error"]
+    assert server.record_flow_test("new petg", made["project_3mf"], 3, filament="PETG")["spool"]["max_flow"] == 10.0
+    # Too many tubes for the bed, and a project that is not a flow test.
+    assert "15 fit the bed" in server.flow_test("PLA", start=2, end=40, step=1)["error"]
+    assert "not a flow test" in server.record_flow_test("black pla", server.slice_model(str(cube_stl), "PLA")["project_3mf"], 1)["error"]
+    assert flowtest.tube().shape == (200, 3, 3)

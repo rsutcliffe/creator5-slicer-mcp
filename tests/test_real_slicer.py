@@ -203,3 +203,15 @@ def test_a_leg_that_starts_in_mid_air_is_found_in_flash_studios_gcode(real_env):
     propped = server.slice_model(str(real_env / "hanging.stl"), "PLA", supports="on")
     assert propped["ok"] and propped["support_sections_in_gcode"] > 0
     assert propped["sliced_check"]["mid_air"] == [] and not any("Sliced check" in w for w in propped["plan"]["warnings"])
+
+
+def test_each_flow_test_tube_prints_at_its_own_flow_in_flash_studios_gcode(real_env):
+    from creator5_mcp import server
+    made = server.flow_test("PETG", start=6, end=18, step=3)
+    assert made["ok"] and made["exit_code"] == 0 and not any("Do not print" in w or "No preset" in w for w in made["warnings"]), made
+    assert [t["flow_mm3_s"] for t in made["tubes"]] == [6.0, 9.0, 12.0, 15.0, 18.0]
+    for tube in made["tubes"]:
+        assert tube["flow_in_gcode"] == pytest.approx(tube["flow_mm3_s"], rel=0.02), made["tubes"]
+    gcode = Path(made["gcode"]).read_text(errors="ignore")
+    assert "; filament_max_volumetric_speed = 200" in gcode and "; wall_loops = 1" in gcode and ";TYPE:Brim" in gcode
+    assert Path(made["plate_png"]).is_file()
