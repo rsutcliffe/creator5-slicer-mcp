@@ -284,14 +284,16 @@ def _documents(title: str, objects: list[dict], copies: int, toolheads: int,
 def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Path, copies: int = 1,
                   extra_process: dict | None = None, extra_filament: dict | None = None,
                   colour: str = "#161616", pause_before_z: float = 0, plate: int = 1,
-                  loaded: dict | None = None) -> dict:
+                  loaded: dict | None = None, gcode_at: list[tuple[float, str]] | None = None) -> dict:
     """Create the .3mf project and return a short description of it.
 
     colour is used only when the plan does not list its filaments.
     pause_before_z, in mm, pauses the print before the layer whose top is at that height,
     with the printer's own pause command.
     loaded, when given, is the model itself, as model.load_objects returns it, used in place of the file.
-    An object in it may carry "settings": {setting: value} of its own, written as per-object settings."""
+    An object in it may carry "settings": {setting: value} of its own, written as per-object settings.
+    gcode_at runs G-code before the layer whose top is at each height, as (mm, text): a temperature or a
+    pressure advance that changes up a test tower."""
     if copies < 1:
         raise ProjectError("copies must be at least 1")
     try:
@@ -310,14 +312,19 @@ def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Pa
         archive.writestr("3D/3dmodel.model", model_xml)
         archive.writestr("Metadata/model_settings.config", config_xml)
         archive.writestr("Metadata/project_settings.config", json.dumps(settings, indent=4))
-        if pause_before_z:
-            # As _BBS_3MF_Exporter writes it: type 1 is a pause, at the print height of the layer it comes before.
+        # As _BBS_3MF_Exporter writes it, at the print height of the layer each comes before: type 1 is a pause,
+        # type 4 is G-code of our own (CustomGCode::Type in the slicer's source).
+        at_heights = ([(pause_before_z, 1, str(settings.get("machine_pause_gcode") or ""))] if pause_before_z else []) \
+            + [(height, 4, text) for height, text in gcode_at or []]
+        if at_heights:
             mode = "MultiExtruder" if len(settings["filament_settings_id"]) > 1 else "SingleExtruder"
             archive.writestr("Metadata/custom_gcode_per_layer.xml",
                              '<?xml version="1.0" encoding="utf-8"?>\n<custom_gcodes_per_layer>\n<plate>\n<plate_info id="1"/>\n'
-                             f'<layer top_z="{pause_before_z:g}" type="1" extruder="1" color="" extra="" '
-                             f'gcode="{_xml(str(settings.get("machine_pause_gcode") or ""))}"/>\n'
-                             f'<mode value="{mode}"/>\n</plate>\n</custom_gcodes_per_layer>\n')
+                             # The importer takes a pause's command from the printer preset and our own text from `extra`.
+                             + "".join(f'<layer top_z="{height:g}" type="{kind}" extruder="1" color="" '
+                                       f'extra="{_xml(text) if kind == 4 else ""}" gcode="{_xml(text)}"/>\n'
+                                       for height, kind, text in sorted(at_heights))
+                             + f'<mode value="{mode}"/>\n</plate>\n</custom_gcodes_per_layer>\n')
     return {
         "project": str(out_path),
         "copies": copies,

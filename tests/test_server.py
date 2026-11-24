@@ -315,7 +315,8 @@ def test_tools_over_real_stdio_transport(fake_env, cube_stl):
     names, payload = asyncio.run(run())
     assert names == {"check_setup", "list_filaments", "analyse_model", "recommend_settings", "slice_model",
                      "open_in_slicer", "save_spool", "record_print_result", "compare_with_saved_project",
-                     "check_flash_studio_slice", "preview", "printer_status", "reprint_objects", "compare_settings", "flow_test", "record_flow_test"}
+                     "check_flash_studio_slice", "preview", "printer_status", "reprint_objects", "compare_settings", "flow_test", "record_flow_test", "temperature_test", "record_temperature_test",
+                     "pressure_advance_test", "record_pressure_advance_test"}
     assert payload["ok"] and payload["summary"]["print_time"] == "1h 23m"
 
 
@@ -1007,3 +1008,56 @@ def test_the_desktop_bundle_holds_a_valid_manifest_and_the_server(tmp_path):
     for module_name in ("server", "printcheck", "slicecheck", "preview", "printer", "flowtest", "doctor"):
         assert f"src/creator5_mcp/{module_name}.py" in names
     assert not any(".venv" in name or "__pycache__" in name or name.startswith("tests/") for name in names)
+
+
+def test_temperature_and_pressure_advance_towers_and_what_they_save(fake_env, cube_stl):
+    import zipfile
+    from creator5_mcp import towers
+    server.save_spool("white petg", "PETG", nozzle_temp=255, bed_temp=70, colour="white")
+    hot = server.temperature_test("white petg", hottest=260, coolest=230, step=10)
+    assert hot["ok"], hot
+    assert [(b["block"], b["value"], b["from_mm"], b["to_mm"]) for b in hot["blocks"]] == \
+        [(1, 260, 0.6, 8.6), (2, 250, 8.6, 16.6), (3, 240, 16.6, 24.6), (4, 230, 24.6, 32.6)]
+    with zipfile.ZipFile(hot["project_3mf"]) as archive:
+        at_heights = archive.read("Metadata/custom_gcode_per_layer.xml").decode()
+        settings = json.loads(archive.read("Metadata/project_settings.config"))
+    # The first block's temperature is the filament's own; each later block changes it at its first layer, in the
+    # attribute Flash Studio reads custom G-code from.
+    assert settings["nozzle_temperature"] == ["260"] and settings["layer_height"] == "0.2"
+    assert at_heights.count('type="4"') == 3 and 'top_z="8.8" type="4" extruder="1" color="" extra="M104 S250 ;' in at_heights
+    assert 'top_z="24.8"' in at_heights and "M104 S230" in at_heights
+    # The fake slicer writes none of it into its G-code, so the tower is refused rather than trusted.
+    assert any("Do not print it" in w for w in hot["warnings"])
+    # Block 3 was best: 240 C goes to the spool, and its bed temperature stays.
+    saved = server.record_temperature_test("white petg", hot["project_3mf"], 3)
+    assert saved["ok"] and saved["nozzle_temp"] == 240 and saved["replaced"] == 255 and saved["spool"]["bed_temp"] == 70
+    assert "end of the tower" in server.record_temperature_test("white petg", hot["project_3mf"], 4)["note"]
+    assert "blocks 1 to 4" in server.record_temperature_test("white petg", hot["project_3mf"], 5)["error"]
+    # With no range given the filament preset's own range is used; these test presets carry none, so it is asked for.
+    assert "gives no temperature range" in server.temperature_test("PLA")["error"]
+    assert "hottest temperature first" in server.temperature_test("PLA", hottest=200, coolest=220)["error"]
+    # Pressure advance rises up a tube; the chosen value is used by every later slice with that spool.
+    tube = server.pressure_advance_test("white petg", start=0.02, end=0.08, step=0.02)
+    assert tube["ok"] and [b["value"] for b in tube["blocks"]] == [0.02, 0.04, 0.06, 0.08]
+    with zipfile.ZipFile(tube["project_3mf"]) as archive:
+        at_heights = archive.read("Metadata/custom_gcode_per_layer.xml").decode()
+        settings = json.loads(archive.read("Metadata/project_settings.config"))
+    one = lambda value: value[0] if isinstance(value, list) else value      # these test presets do not list the setting per toolhead
+    assert one(settings["pressure_advance"]) == "0.02" and one(settings["enable_pressure_advance"]) == "1" and settings["wall_loops"] == "2"
+    assert 'top_z="4.2"' in at_heights and "SET_PRESSURE_ADVANCE ADVANCE=0.04" in at_heights and at_heights.count('type="4"') == 3
+    kept = server.record_pressure_advance_test("white petg", tube["project_3mf"], 3)
+    assert kept["ok"] and kept["pressure_advance"] == 0.06
+    later = server.slice_model(str(cube_stl), "white petg")
+    with zipfile.ZipFile(later["project_3mf"]) as archive:
+        used = json.loads(archive.read("Metadata/project_settings.config"))
+    assert one(used["pressure_advance"]) == "0.06" and used["nozzle_temperature"] == ["230"]      # the last block recorded above
+    assert any("Pressure advance 0.06, from this spool's own test" in line for line in later["plan"]["rationale"])
+    assert "pressure_advance" in used["different_settings_to_system"][1]
+    # A tower of the other kind, and a spool nobody has saved.
+    assert "not a temperature test" in server.record_temperature_test("white petg", tube["project_3mf"], 1)["error"]
+    assert "No spool called" in server.record_pressure_advance_test("mystery", tube["project_3mf"], 2)["error"]
+    assert server.record_pressure_advance_test("grey petg", tube["project_3mf"], 2, filament="PETG")["spool"]["pressure_advance"] == 0.04
+    # The reader gives each command the layer it runs in.
+    gcode = fake_env / "t.gcode"
+    gcode.write_text("M104 S200\n;LAYER_CHANGE\n;Z:0.2\nG1 X1\n;LAYER_CHANGE\n;Z:8.8\n;CUSTOM_GCODE\nM104 S250 ; block 2\nG1 X2\n")
+    assert towers.commands(gcode, "M104") == [(8.8, "M104 S250")]

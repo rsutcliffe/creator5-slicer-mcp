@@ -16,7 +16,7 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP, Image
 
-from . import __version__, flowtest, model, preview as pictures, printcheck, printer, profiles, project, recommend, results, slicecheck, slicer, spools
+from . import __version__, flowtest, model, preview as pictures, printcheck, printer, profiles, project, recommend, results, slicecheck, slicer, spools, towers
 from .config import ConfigError, load_settings
 
 mcp = FastMCP(
@@ -41,7 +41,8 @@ mcp = FastMCP(
         "temperatures. Pass finish=smooth when the user wants a smooth or professional surface. When the user says how a print "
         "came out, call record_print_result; when only some parts of a plate failed, reprint_objects makes a project "
         "of those alone. For a new spool, or one whose prints look rough at speed, flow_test writes a short test print "
-        "and record_flow_test saves the limit it finds. "
+        "and record_flow_test saves the limit it finds; temperature_test and pressure_advance_test do the same for "
+        "nozzle temperature and pressure advance. "
         "When the user wonders whether stronger or finer is worth it, compare_settings slices both and "
         "gives the time and filament of each. When the user asks about the printer, or before telling them to load "
         "filament, call printer_status: it reads what the printer is doing and what is loaded in each toolhead, and "
@@ -220,6 +221,151 @@ def flow_test(filament: str, start: float = 5, end: float = 25, step: float = 2.
         return _fail(exc)
 
 
+def _tower(kind: str, test: dict, word: str, filament: str, nozzle: str, pro: bool, nozzle_temp: int = 0, bed_temp: int = 0) -> dict:
+    """Write, slice and check one test tower. The G-code must carry each block's command at the block's first layer."""
+    settings = load_settings()
+    profiles_dir = settings.require_profiles()
+    plan, _ = _plan(None, filament, "standard", "standard", nozzle, "off", "off", towers.LAYER, False, False, pro, nozzle_temp, bed_temp)
+    over = {**plan["filaments"][0]["overrides"], **test["filament"]}
+    plan["filaments"][0]["overrides"] = plan["filament_overrides"] = over
+    job_dir = settings.output_dir / f"{time.strftime('%Y%m%d_%H%M%S')}_{kind}_test"
+    made = project.write_project(profiles_dir, job_dir / "tower", plan, job_dir / f"{kind}_test.3mf", 1, test["process"],
+                                 loaded=test["loaded"], gcode_at=test["gcode_at"])
+    result = slicer.slice_project(settings, Path(made["project"]), job_dir)
+    asked = [(height, text.split(";")[0].strip()) for height, text in test["gcode_at"]]
+    found = towers.commands(Path(result["gcode"]), word)
+    warnings = [w for w in plan["warnings"] if not w.startswith("No preset at")]
+    if found != asked:
+        warnings.append("The G-code does not change the value at each block as asked, so the test would mislead. Do not print it; "
+                        f"report this. Asked {asked}; found {found}.")
+    blocks = [{"block": i + 1, "value": value, "from_mm": round(test["base_mm"] + i * test["block_mm"], 1),
+               "to_mm": round(test["base_mm"] + (i + 1) * test["block_mm"], 1)} for i, value in enumerate(test["values"])]
+    drawn = _draw(Path(made["project"]), Path(result["gcode"]), job_dir, result["notes"])
+    return {"ok": True, "project_3mf": made["project"], **result, **drawn, "blocks": blocks, "warnings": warnings,
+            "filament_preset": plan["filaments"][0]["preset"]}
+
+
+@mcp.tool()
+def temperature_test(filament: str, hottest: int = 0, coolest: int = 0, step: int = 5, nozzle: str = "0.4", pro: bool = False) -> dict:
+    """Write a temperature tower: a test print that shows which nozzle temperature suits a spool.
+
+    The tower is a stack of blocks, hottest at the bottom, each two posts with a bridge across the top. The
+    user prints it and picks the block with the cleanest walls, the fewest strings between the posts and a
+    bridge that does not sag; record_temperature_test saves that block's temperature to the spool. Open the
+    project with open_in_slicer.
+
+    Args:
+        filament: The filament or saved spool to test.
+        hottest: Temperature in C of the bottom block, or 0 for the top of the filament preset's range.
+        coolest: Temperature in C of the top block, or 0 for the bottom of the preset's range.
+        step: Fall in temperature from one block to the next.
+        nozzle: Nozzle diameter in mm.
+        pro: True for the Creator 5 Pro.
+    """
+    try:
+        settings = load_settings()
+        if not (hottest and coolest):
+            known = _spool(settings, filament)
+            preset = recommend.recommend(settings.require_profiles(), known["filament"], "standard", "standard", nozzle, None, pro=pro)["filament_preset"]
+            flat = profiles.flatten(settings.require_profiles(), "filament", preset)
+            if "nozzle_temperature_range_high" not in flat or "nozzle_temperature_range_low" not in flat:
+                return _fail(ValueError(f"The preset '{preset}' gives no temperature range. Say the hottest and coolest temperatures to test."))
+            first = lambda key: int(float(flat[key][0] if isinstance(flat[key], list) else flat[key]))
+            hottest = hottest or first("nozzle_temperature_range_high")
+            coolest = coolest or first("nozzle_temperature_range_low")
+            while (hottest - coolest) / step + 1 > towers.MOST:       # the preset's whole range may be more blocks than fit
+                step += 5
+        out = _tower("temperature", towers.temperature(hottest, coolest, step), "M104", filament, nozzle, pro)
+        out["how_to_read"] = ("Block 1 is at the bottom and the hottest. Each block is 8 mm tall and ends in a bridge. Pick the block "
+                              "with clean walls, few strings between the posts and a flat bridge, and give its number to "
+                              "record_temperature_test.")
+        return out
+    except _ERRORS + (ValueError, KeyError) as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def pressure_advance_test(filament: str, start: float = 0.0, end: float = 0.08, step: float = 0.01, nozzle: str = "0.4",
+                          nozzle_temp: int = 0, bed_temp: int = 0, pro: bool = False) -> dict:
+    """Write a pressure advance tower: a test print that shows which pressure advance gives a spool sharp corners.
+
+    The tower is a square tube. Pressure advance rises block by block from the bottom, and a tick on the front
+    face marks the foot of each block. The user prints it and picks the block whose corners are sharp without
+    bulging and without gaps; record_pressure_advance_test saves that value to the spool. Open the project
+    with open_in_slicer.
+
+    Args:
+        filament: The filament or saved spool to test.
+        start: Pressure advance of the bottom block.
+        end: Pressure advance of the top block.
+        step: Rise from one block to the next.
+        nozzle: Nozzle diameter in mm.
+        nozzle_temp: Nozzle temperature in C, or 0 to use the spool's or the preset's.
+        bed_temp: Bed temperature in C, or 0 likewise.
+        pro: True for the Creator 5 Pro.
+    """
+    try:
+        out = _tower("pressure_advance", towers.pressure_advance(start, end, step), "SET_PRESSURE_ADVANCE", filament, nozzle, pro,
+                     nozzle_temp, bed_temp)
+        out["how_to_read"] = ("Block 1 is at the bottom. Each block is 4 mm tall, and a tick on the front face marks where the next begins. "
+                              "Pick the block whose corners are sharp, with no bulge and no gap after the corner, and give its "
+                              "number to record_pressure_advance_test.")
+        return out
+    except _ERRORS + (ValueError,) as exc:
+        return _fail(exc)
+
+
+def _record_tower(kind: str, field: str, spool: str, project_3mf: str, best_block: int, filament: str) -> dict:
+    settings = load_settings()
+    values = towers.values_in(model.load_objects(_path(project_3mf))["objects"][0]["name"], kind)
+    if not 1 <= best_block <= len(values):
+        raise ValueError(f"The tower has blocks 1 to {len(values)}.")
+    value = int(values[best_block - 1]) if field == "nozzle_temp" else values[best_block - 1]
+    known = spools.find(settings.output_dir, spool)
+    if not known:
+        if not filament:
+            raise ValueError(f"No spool called '{spool}' is saved. Say what the filament is, for example PETG.")
+        recommend.match_material(filament)
+        known = spools.save(settings.output_dir, spool, filament)
+    saved = spools.update(settings.output_dir, known["name"], **{field: value})
+    out = {"ok": True, "spool": saved, field: value, "replaced": known.get(field) or None}
+    if best_block in (1, len(values)):
+        out["note"] = "The best block was at the end of the tower, so the real best may lie beyond it. Run the test again with the range moved that way."
+    return out
+
+
+@mcp.tool()
+def record_temperature_test(spool: str, project_3mf: str, best_block: int, filament: str = "") -> dict:
+    """Save a temperature tower's result as a spool's nozzle temperature.
+
+    Args:
+        spool: The saved spool's name, or a name for a new one.
+        project_3mf: The project_3mf path temperature_test returned for the tower that was printed.
+        best_block: The number of the best block, counted up from the bed.
+        filament: The material and maker, needed only when the spool is not saved yet.
+    """
+    try:
+        return _record_tower("Temperature", "nozzle_temp", spool, project_3mf, best_block, filament)
+    except _ERRORS + (ValueError,) as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def record_pressure_advance_test(spool: str, project_3mf: str, best_block: int, filament: str = "") -> dict:
+    """Save a pressure advance tower's result to a spool; later slices with that spool use it in place of the preset's figure.
+
+    Args:
+        spool: The saved spool's name, or a name for a new one.
+        project_3mf: The project_3mf path pressure_advance_test returned for the tower that was printed.
+        best_block: The number of the best block, counted up from the bed.
+        filament: The material and maker, needed only when the spool is not saved yet.
+    """
+    try:
+        return _record_tower("Pressure advance", "pressure_advance", spool, project_3mf, best_block, filament)
+    except _ERRORS + (ValueError,) as exc:
+        return _fail(exc)
+
+
 @mcp.tool()
 def record_flow_test(spool: str, project_3mf: str, last_good_tube: int, filament: str = "") -> dict:
     """Save a flow test's result as a spool's flow limit, used at every layer height from then on.
@@ -389,11 +535,12 @@ def _spool(settings, text: str, nozzle_temp: int = 0, bed_temp: int = 0, max_spe
     said = project.colour_for(text, "")
     if not saved:
         return {"filament": text, "nozzle_temp": nozzle_temp, "bed_temp": bed_temp, "max_speed": max_speed, "max_flow": 0,
-                "colour": said, "note": None}
+                "pressure_advance": 0, "colour": said, "note": None}
     return {"filament": saved["filament"], "nozzle_temp": nozzle_temp or saved["nozzle_temp"],
             "bed_temp": bed_temp or saved["bed_temp"], "max_speed": max_speed or saved["max_speed"],
             # A speed given with the request is the newer instruction, so it beats the saved flow limit.
             "max_flow": 0 if max_speed else saved.get("max_flow", 0),
+            "pressure_advance": saved.get("pressure_advance", 0),
             "colour": said or project.colour_for(saved["colour"], ""),
             "note": f"Spool '{saved['name']}' from the register: {saved['filament']}."}
 
@@ -427,6 +574,10 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
         profiles_dir, first["filament"], quality, strength, nozzle, analysis, supports, brim,
         layer_height or None, precise_fit, smooth_top, pro, first["nozzle_temp"] or None, first["bed_temp"] or None,
         first["max_speed"] or None, designer, toolheads, first["max_flow"] or None, finish)
+    if first["pressure_advance"]:
+        # Measured on this spool with the pressure advance test; it takes the place of the preset's figure.
+        plan["filament_overrides"].update({"enable_pressure_advance": "1", "pressure_advance": f"{first['pressure_advance']:g}"})
+        plan["rationale"].append(f"Pressure advance {first['pressure_advance']:g}, from this spool's own test.")
     file_colours = shape.get("colours", []) if toolheads > 1 else []
     slots, unnamed = [], []
     for i in range(toolheads):

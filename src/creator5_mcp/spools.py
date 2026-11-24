@@ -41,6 +41,17 @@ def save(output_dir: Path, name: str, filament: str, nozzle_temp: int = 0, bed_t
     return {"name": name, **entry}
 
 
+def update(output_dir: Path, name: str, **figures) -> dict:
+    """Change some figures of a saved spool and keep the rest."""
+    spools = load(output_dir)
+    name = " ".join(name.lower().split())
+    if name not in spools:
+        raise ValueError(f"No spool called '{name}' is saved.")
+    spools[name].update(figures)
+    (output_dir / FILE_NAME).write_text(json.dumps(spools, indent=2) + "\n", encoding="utf-8")
+    return {"name": name, **spools[name]}
+
+
 def find(output_dir: Path, text: str) -> dict | None:
     """The saved spool whose every name word appears in `text`; the longest name wins."""
     said = _words(text)
