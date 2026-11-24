@@ -315,7 +315,7 @@ def test_tools_over_real_stdio_transport(fake_env, cube_stl):
     names, payload = asyncio.run(run())
     assert names == {"check_setup", "list_filaments", "analyse_model", "recommend_settings", "slice_model",
                      "open_in_slicer", "save_spool", "record_print_result", "compare_with_saved_project",
-                     "check_flash_studio_slice", "preview", "printer_status"}
+                     "check_flash_studio_slice", "preview", "printer_status", "reprint_objects", "compare_settings"}
     assert payload["ok"] and payload["summary"]["print_time"] == "1h 23m"
 
 
@@ -867,3 +867,57 @@ def test_painted_triangles_are_split_as_the_slicer_splits_them_and_small_parts_a
     assert preview.fills_little(project)
     whole, framed = red(preview.plate_png(project, "top")[0]), red(preview.plate_png(project, "top", zoom=True)[0])
     assert 3500 < whole < 5000 and framed > 400_000
+
+
+def test_a_plate_is_chosen_and_the_designers_settings_are_accounted_for(fake_env, tmp_path):
+    from conftest import box_triangles, make_3mf
+    designed = {"printer_settings_id": "Bambu Lab A1 0.4 nozzle", "print_settings_id": "0.20mm Standard @BBL A1",
+                "filament_settings_id": ["Bambu PLA Basic @BBL A1"], "enable_support": "1", "support_type": "tree(auto)",
+                "brim_type": "outer_only", "brim_width": "3", "wall_loops": "6",
+                "different_settings_to_system": ["enable_support;support_type;wall_loops;ironing_type", "", ""]}
+    path = make_3mf(tmp_path / "two_plates.3mf", box_triangles(20, 10, 5), designed)
+    first = server.slice_model(str(path), "PLA")
+    assert first["ok"] and first["model"]["plates"] == 2 and first["objects"] == ["holder v3"]
+    assert any("holds 2 plates; plate 1 was used" in note for note in first["model"]["notes"])
+    # The second plate holds the other object, and only it.
+    second = server.slice_model(str(path), "PLA", plate=2)
+    assert second["ok"] and second["objects"] == ["two_plates"] and second["model"]["size_mm"] == [20.0, 10.0, 5.0]
+    assert "there is no plate 3" in server.slice_model(str(path), "PLA", plate=3)["error"]
+    # What became of the designer's settings: supports kept, the brim width kept, the rest named as left behind.
+    report = first["designer_report"]
+    assert report["made_for"]["printer"] == "Bambu Lab A1 0.4 nozzle" and report["kept"]["enable_support"] == "1"
+    assert report["kept"]["brim_width"] == "3" and report["left_behind"] == ["ironing_type", "wall_loops"]
+    assert any("2 settings its designer changed are not carried over" in note for note in first["notes"])
+    assert server.slice_model(str(tmp_path / "two_plates.3mf"), "PLA", supports="off")["designer_report"]["replaced"]["enable_support"] == \
+        {"designer": "1", "used": "0"}
+
+
+def test_failed_parts_are_reprinted_alone_and_two_slices_are_compared(fake_env, cube_stl, labelled_3mf):
+    import zipfile
+    plate = server.slice_model(str(labelled_3mf), "white PLA", other_filaments=["black PLA"], copies=3,
+                               process_overrides={"wall_loops": 5}, pause_before_z=3.0)
+    assert plate["ok"], plate                                  # three copies: three objects in the project
+    # A failed plate of several offers the way to reprint some of them.
+    logged = server.record_print_result(plate["project_3mf"], "failed", "the second tag came off")
+    assert "reprint_objects" in logged["reprint"] and "2 = KeyTag_TwoColour" in logged["reprint"]
+    again = server.reprint_objects(plate["project_3mf"], [2])
+    assert again["ok"] and again["objects"] == ["KeyTag_TwoColour"] and again["settings_mismatched"] == [], again
+    with zipfile.ZipFile(plate["project_3mf"]) as old, zipfile.ZipFile(again["project_3mf"]) as new:
+        before, after = (json.loads(z.read("Metadata/project_settings.config")) for z in (old, new))
+        assert new.read("Metadata/custom_gcode_per_layer.xml") == old.read("Metadata/custom_gcode_per_layer.xml")     # the pause is kept
+        assert new.read("3D/3dmodel.model").count(b"<item objectid") == 1
+    # Same presets and changes, both toolheads, and a brim added and marked as changed.
+    same = [k for k in before if k not in ("brim_type", "brim_width", "different_settings_to_system")]
+    assert all(before[k] == after[k] for k in same) and after["wall_loops"] == "5" and len(after["filament_settings_id"]) == 2
+    assert (after["brim_type"], after["brim_width"]) == ("outer_only", "5")
+    assert {"brim_type", "brim_width", "wall_loops"} <= set(after["different_settings_to_system"][0].split(";"))
+    assert Path(again["plate_png"]).is_file()
+    assert "choose from 1 to 3" in server.reprint_objects(plate["project_3mf"], [4])["error"]
+    assert "reprint" not in server.record_print_result(again["project_3mf"], "failed")       # one object: nothing to choose
+    # Standard against functional: the settings that differ are listed with both values.
+    compared = server.compare_settings(str(cube_stl), "PLA")
+    assert compared["ok"] and compared["a"]["strength"] == "standard" and compared["b"]["strength"] == "functional"
+    assert compared["settings_that_differ"]["wall_loops"] == {"a": "3", "b": "4"} or "wall_loops" in compared["settings_that_differ"]
+    assert "sparse_infill_density" in compared["settings_that_differ"] and compared["a"]["project_3mf"] != compared["b"]["project_3mf"]
+    assert set(compared["b_against_a"]) == {"seconds", "minutes", "filament_g", "layers"}
+    assert server.compare_settings(str(cube_stl), "nonsense filament")["ok"] is False

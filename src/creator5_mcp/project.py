@@ -282,7 +282,7 @@ def _documents(title: str, objects: list[dict], copies: int, toolheads: int,
 
 def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Path, copies: int = 1,
                   extra_process: dict | None = None, extra_filament: dict | None = None,
-                  colour: str = "#161616", pause_before_z: float = 0) -> dict:
+                  colour: str = "#161616", pause_before_z: float = 0, plate: int = 1) -> dict:
     """Create the .3mf project and return a short description of it.
 
     colour is used only when the plan does not list its filaments.
@@ -291,7 +291,7 @@ def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Pa
     if copies < 1:
         raise ProjectError("copies must be at least 1")
     try:
-        loaded = model_mod.load_objects(model_path)   # STL, OBJ or 3MF, oriented and placed as the file has it
+        loaded = model_mod.load_objects(model_path, plate)   # STL, OBJ or 3MF, oriented and placed as the file has it
     except model_mod.ModelError as exc:
         raise ProjectError(str(exc)) from exc
     settings, unknown = project_settings(profiles_dir, plan, extra_process, extra_filament, colour)
@@ -325,3 +325,30 @@ def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Pa
         "preset_only_process_settings": [k for k in changed_process if k not in on_objects and k not in _RESET_HARMLESS],
         "settings": settings,
     }
+
+
+def reprint(project: Path, keep: list[int], out_path: Path) -> dict:
+    """A new project holding only some objects of one this server wrote: the same presets and changed settings,
+    a brim added, and any pause kept. keep lists positions in the project's objects, from 0."""
+    loaded = model_mod.load_objects(project)
+    if not keep or any(not 0 <= i < len(loaded["objects"]) for i in keep):
+        raise ProjectError(f"The project holds {len(loaded['objects'])} objects; choose from 1 to {len(loaded['objects'])}.")
+    with zipfile.ZipFile(project) as archive:
+        settings = json.loads(archive.read("Metadata/project_settings.config"))
+        pause = archive.read("Metadata/custom_gcode_per_layer.xml") if "Metadata/custom_gcode_per_layer.xml" in archive.namelist() else None
+    # A part that came off once gets a brim the second time.
+    settings.update({"brim_type": "outer_only", "brim_width": "5"})
+    changed = settings["different_settings_to_system"]
+    changed[0] = ";".join(sorted(set(filter(None, changed[0].split(";"))) | {"brim_type", "brim_width"}))
+    chosen = [loaded["objects"][i] for i in keep]
+    model_xml, config_xml, size = _documents(chosen[0]["name"], chosen, 1, len(settings["filament_settings_id"]))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", _CONTENT_TYPES)
+        archive.writestr("_rels/.rels", _RELS)
+        archive.writestr("3D/3dmodel.model", model_xml)
+        archive.writestr("Metadata/model_settings.config", config_xml)
+        archive.writestr("Metadata/project_settings.config", json.dumps(settings, indent=4))
+        if pause:
+            archive.writestr("Metadata/custom_gcode_per_layer.xml", pause)
+    return {"project": str(out_path), "objects": [obj["name"] for obj in chosen], "settings": settings}

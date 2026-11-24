@@ -39,7 +39,9 @@ mcp = FastMCP(
         "Use recommend_settings first when the user wants to review choices. For a job with more than one filament, "
         "after the user presses Slice plate in Flash Studio, call check_flash_studio_slice to confirm each toolhead's "
         "temperatures. Pass finish=smooth when the user wants a smooth or professional surface. When the user says how a print "
-        "came out, call record_print_result. When the user asks about the printer, or before telling them to load "
+        "came out, call record_print_result; when only some parts of a plate failed, reprint_objects makes a project "
+        "of those alone. When the user wonders whether stronger or finer is worth it, compare_settings slices both and "
+        "gives the time and filament of each. When the user asks about the printer, or before telling them to load "
         "filament, call printer_status: it reads what the printer is doing and what is loaded in each toolhead, and "
         "changes nothing. The user prints from Flash Studio; this server never sends anything to the printer."
     ),
@@ -183,8 +185,85 @@ def record_print_result(project_3mf: str, outcome: str, notes: str = "", printed
         settings = load_settings()
         entry = results.record(settings.output_dir, _path(project_3mf), outcome, notes,
                                _path(printed_project) if printed_project else None)
-        return {"ok": True, "result": entry, "results_recorded": len(results.load(settings.output_dir))}
+        out = {"ok": True, "result": entry, "results_recorded": len(results.load(settings.output_dir))}
+        held = [obj["name"] for obj in model.load_objects(_path(project_3mf))["objects"]]
+        if outcome != "good" and len(held) > 1:
+            out["reprint"] = (f"The plate held {len(held)} objects. If only some failed, call reprint_objects with this project and "
+                              "their numbers to make a project of those alone, with a brim: "
+                              + ", ".join(f"{i + 1} = {name}" for i, name in enumerate(held)))
+        return out
     except _ERRORS as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def reprint_objects(project_3mf: str, objects: list[int]) -> dict:
+    """Make a project holding only some objects of one already sliced, to reprint parts that failed.
+
+    The new project keeps the same presets, changed settings and any pause, and adds a 5 mm brim. It is
+    sliced to check it, and its plate is drawn. Open it with open_in_slicer.
+
+    Args:
+        project_3mf: The project_3mf path slice_model returned for the plate that was printed.
+        objects: Which objects to reprint, by number from 1, in the order the project lists them
+            (record_print_result and the result's "objects" give the order).
+    """
+    try:
+        settings = load_settings()
+        source = _path(project_3mf)
+        job_dir = settings.output_dir / f"{time.strftime('%Y%m%d_%H%M%S')}_{source.stem}_reprint"
+        made = project.reprint(source, [number - 1 for number in objects], job_dir / f"{source.stem}_reprint.3mf")
+        result = slicer.slice_project(settings, Path(made["project"]), job_dir)
+        kept = {key: made["settings"][key] for key in made["settings"]["different_settings_to_system"][0].split(";") if key}
+        mismatched = slicer.check_settings(Path(result["gcode"]), kept)
+        drawn = _draw(Path(made["project"]), Path(result["gcode"]), job_dir, result["notes"])
+        return {"ok": True, "project_3mf": made["project"], "objects": made["objects"], **result, **drawn,
+                "settings_checked_in_gcode": len(kept) - len(mismatched), "settings_mismatched": mismatched}
+    except _ERRORS as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def compare_settings(model_path: str, filament: str, quality_a: str = "standard", strength_a: str = "standard",
+                     quality_b: str = "standard", strength_b: str = "functional", nozzle: str = "0.4",
+                     supports: str = "auto", copies: int = 1, other_filaments: list[str] | None = None) -> dict:
+    """Slice one model twice, with two levels of quality or strength, and show what the difference costs.
+
+    Returns each slice's print time, filament and layers, the difference between them, and every setting
+    that differs. Both projects are kept; open the one the user chooses with open_in_slicer.
+
+    Args:
+        model_path: Absolute path to the model file.
+        filament: Filament in toolhead 1, as for slice_model.
+        quality_a: draft, standard, fine or best, for the first slice.
+        strength_a: decorative, standard, functional or structural, for the first slice.
+        quality_b: Quality for the second slice.
+        strength_b: Strength for the second slice.
+        nozzle: Nozzle diameter in mm.
+        supports: auto, on or off, for both.
+        copies: Copies on the plate, for both.
+        other_filaments: Filaments in toolheads 2, 3 and 4, for both.
+    """
+    try:
+        runs = {}
+        for label, quality, strength in (("a", quality_a, strength_a), ("b", quality_b, strength_b)):
+            run = slice_model(model_path, filament, quality, strength, nozzle, supports, copies=copies,
+                              other_filaments=other_filaments, job_name=f"{Path(model_path).stem}_{quality}_{strength}")
+            if not run["ok"]:
+                return run
+            with zipfile.ZipFile(run["project_3mf"]) as archive:
+                saved = json.loads(archive.read("Metadata/project_settings.config"))
+            runs[label] = {"quality": quality, "strength": strength, "project_3mf": run["project_3mf"], **run["summary"],
+                           "settings_mismatched": run["settings_mismatched"], "warnings": run["plan"]["warnings"], "_settings": saved}
+        a, b = runs["a"].pop("_settings"), runs["b"].pop("_settings")
+        differs = {key: {"a": a.get(key), "b": b.get(key)} for key in sorted(set(a) | set(b))
+                   if a.get(key) != b.get(key) and key != "different_settings_to_system"}
+        seconds = runs["b"].get("print_time_seconds", 0) - runs["a"].get("print_time_seconds", 0)
+        grams = round(runs["b"].get("filament_used_g", 0) - runs["a"].get("filament_used_g", 0), 2)
+        return {"ok": True, "a": runs["a"], "b": runs["b"], "settings_that_differ": differs,
+                "b_against_a": {"seconds": seconds, "minutes": round(seconds / 60), "filament_g": grams,
+                                "layers": runs["b"].get("layers", 0) - runs["a"].get("layers", 0)}}
+    except _ERRORS + (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
         return _fail(exc)
 
 
@@ -238,7 +317,7 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
           brim: str, layer_height: float | None, precise_fit: bool, smooth_top: bool, pro: bool,
           nozzle_temp: int = 0, bed_temp: int = 0, max_speed: int = 0,
           shape_path: Path | None = None, other_filaments: list[str] | None = None,
-          finish: str = "standard") -> tuple[dict, dict | None]:
+          finish: str = "standard", plate: int = 1) -> tuple[dict, dict | None]:
     """shape_path: the file whose shape will print, when it differs from model_path (an oriented or converted copy).
 
     The plan's "filaments" lists one {"preset", "overrides", "colour", "material"} per toolhead used.
@@ -250,7 +329,7 @@ def _plan(model_path: str | None, filament: str, quality: str, strength: str, no
         path = _path(model_path)
         designer = model.designer_settings(path)
         angle = float(designer.get("support_threshold_angle") or 0) or model.DEFAULT_SUPPORT_ANGLE
-        analysis = model.analyse(shape_path or path, angle, float(nozzle))
+        analysis = model.analyse(shape_path or path, angle, float(nozzle), plate)
     shape = analysis if analysis and analysis.get("analysed") else {}
     said = [filament, *(other_filaments or [])]
     limit = len(profiles.flatten(profiles_dir, "machine", profiles.machine_name(nozzle, pro)).get("nozzle_diameter") or [1])
@@ -432,6 +511,7 @@ def slice_model(
     other_filaments: list[str] | None = None,
     pause_before_z: float = 0,
     finish: str = "standard",
+    plate: int = 1,
 ) -> dict:
     """Slice a model for the Creator 5 with settings chosen for the filament and purpose.
 
@@ -468,6 +548,7 @@ def slice_model(
             nut or NFC tag. 0 for no pause. The layer below it is the last one printed before the pause.
         finish: standard or smooth. Smooth uses at least fine layers and irons flat tops, for the smoothest
             surfaces the printer gives. Use it when the user asks for a smooth or professional finish.
+        plate: Which plate of a 3MF that holds several, from 1. The result's model.plates says how many there are.
     """
     try:
         settings = load_settings()
@@ -485,7 +566,7 @@ def slice_model(
             holding = settings.output_dir / f"{stamp}_converting"
             converted = model.convert_step(source, holding)
             notes.append("The STEP file was converted to a mesh (0.01 mm tolerance).")
-        loaded = model.load_objects(converted or source)
+        loaded = model.load_objects(converted or source, plate)
         # A downloaded file is often named by a hash; the name its designer gave the part reads better.
         title = loaded["objects"][0]["name"] if source.suffix.lower() == ".3mf" else source.stem
         name = re.sub(r"[^A-Za-z0-9._-]+", "_", job_name or title).strip("_") or "print"
@@ -505,11 +586,17 @@ def slice_model(
             notes.append("The slicer chose the orientation; the project and the G-code both use it.")
         plan, analysis = _plan(str(source), filament, quality, strength, nozzle, supports, brim, layer_height,
                                precise_fit, smooth_top, pro, nozzle_temp, bed_temp, max_speed, shape_path=shaped,
-                               other_filaments=other_filaments, finish=finish)
-        # A STEP is checked as the STEP, which is exact; a turned copy is checked as it now stands.
-        checking = _print_check(source if converted and shaped == converted else shaped, plan, nozzle, wait=False)
+                               other_filaments=other_filaments, finish=finish, plate=plate)
         made = project.write_project(profiles_dir, shaped, plan, job_dir / f"{name}.3mf", copies,
-                                     process_overrides, filament_overrides, pause_before_z=pause_before_z)
+                                     process_overrides, filament_overrides, pause_before_z=pause_before_z, plate=plate)
+        # A STEP is checked as the STEP, which is exact; a 3MF as the project just written, which holds the one
+        # plate chosen; anything else as the file that will print.
+        target = source if converted and shaped == converted else Path(made["project"]) if shaped.suffix.lower() == ".3mf" else shaped
+        checking = _print_check(target, plan, nozzle, wait=False)
+        carried = model.designer_report(source, made["settings"])
+        if carried and carried["left_behind"]:
+            notes.append(f"The file was set up for {carried['made_for']['printer']}. {len(carried['left_behind'])} settings its designer "
+                         "changed are not carried over; designer_report lists them.")
         result = slicer.slice_project(settings, Path(made["project"]), job_dir)
         result["notes"] = notes + result["notes"]
         chosen = {**plan["process_overrides"], **(process_overrides or {}), **(filament_overrides or {}),
@@ -562,7 +649,7 @@ def slice_model(
         return {"ok": True, "project_3mf": made["project"], **result, **drawn, "objects": made["objects"],
                 "supports_on": supports_on, "support_sections_in_gcode": supports_printed, "pauses_at_z": paused_at,
                 "settings_checked_in_gcode": len(expected) - len(mismatched), "settings_mismatched": mismatched,
-                "plan": plan, "model": analysis, "print_check": check, "sliced_check": sliced, "print_risks": risks}
+                "plan": plan, "model": analysis, "print_check": check, "sliced_check": sliced, "print_risks": risks, "designer_report": carried}
     except _ERRORS as exc:
         return _fail(exc)
 

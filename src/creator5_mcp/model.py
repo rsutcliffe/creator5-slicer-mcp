@@ -91,8 +91,9 @@ def _colour(text: str | None) -> str | None:
     return text[:7].upper() if text and re.fullmatch(r"#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", text) else None
 
 
-def _load_3mf(path: Path) -> dict:
-    """The objects on the first plate, placed as the designer left them.
+def _load_3mf(path: Path, plate: int = 1) -> dict:
+    """The objects on one plate (the first, unless plate says otherwise), placed as the designer left them.
+    "plates" in the result is how many plates the file holds.
 
     Returns {"objects": [{"name", "parts": [{"name", "tris", "extruder", "paint"}]}],
              "colours": [...], "filaments": n, "notes": [...]}.
@@ -130,6 +131,7 @@ def _load_3mf(path: Path) -> dict:
         cfg_name: dict[tuple[str, str | None], str] = {}
         cfg_extruder: dict[tuple[str, str | None], int] = {}
         plate_objects: list[str] | None = None
+        plate_count = 1
         if "Metadata/model_settings.config" in names:
             cfg = ET.fromstring(archive.read("Metadata/model_settings.config"))
             for obj in cfg.findall("object"):
@@ -144,10 +146,13 @@ def _load_3mf(path: Path) -> dict:
                         skip.add((obj.get("id"), part.get("id")))
             plates = cfg.findall("plate")
             if plates:
-                plate_objects = [m.get("value") for inst in plates[0].findall("model_instance")
+                if not 1 <= plate <= len(plates):
+                    raise ModelError(f"{path.name} holds {len(plates)} plate{'s' if len(plates) > 1 else ''}; there is no plate {plate}.")
+                plate_objects = [m.get("value") for inst in plates[plate - 1].findall("model_instance")
                                  for m in inst.findall("metadata") if m.get("key") == "object_id"]
                 if len(plates) > 1:
-                    notes.append(f"The file holds {len(plates)} plates; only plate 1 was used.")
+                    notes.append(f"The file holds {len(plates)} plates; plate {plate} was used. Pass plate to choose another.")
+            plate_count = max(len(plates), 1)
 
         root = tree(root_name)
         scale = _UNITS.get(root.get("unit", "millimeter"), 1.0)
@@ -224,7 +229,7 @@ def _load_3mf(path: Path) -> dict:
             objects = _join_touching(objects, clean_name(path.stem))
     if not objects:
         raise ModelError(f"{path.name} holds no printable mesh")
-    return {"objects": objects, "colours": colours, "filaments": filaments, "notes": notes}
+    return {"objects": objects, "colours": colours, "filaments": filaments, "notes": notes, "plates": plate_count}
 
 
 def convert_step(path: Path, out_dir: Path) -> Path:
@@ -283,7 +288,7 @@ def _join_touching(objects: list[dict], name: str) -> list[dict]:
     return out
 
 
-def load_objects(path: Path) -> dict:
+def load_objects(path: Path, plate: int = 1) -> dict:
     """The model as objects and parts, in millimetres, oriented and placed as the file has them.
 
     Same shape as _load_3mf returns. STL and OBJ files are one object with one part.
@@ -292,7 +297,7 @@ def load_objects(path: Path) -> dict:
         raise ModelError(f"Model not found: {path}")
     suffix = path.suffix.lower()
     if suffix == ".3mf":
-        loaded = _load_3mf(path)
+        loaded = _load_3mf(path, plate)
         for obj in loaded["objects"]:
             obj["name"] = obj["name"] or clean_name(path.stem)
             for i, part in enumerate(obj["parts"]):
@@ -309,7 +314,7 @@ def load_objects(path: Path) -> dict:
         raise ModelError(f"{path.suffix} files cannot be read here. Use STL, OBJ, 3MF or STEP.")
     name = clean_name(path.stem)
     return {"objects": [{"name": name, "parts": [{"name": name, "tris": tris, "extruder": None, "paint": None}]}],
-            "colours": [], "filaments": 0, "notes": []}
+            "colours": [], "filaments": 0, "notes": [], "plates": 1}
 
 
 def filaments_needed(loaded: dict) -> int:
@@ -376,6 +381,32 @@ def thin_walls(tris: np.ndarray, limit: float, pairs: int = 40_000_000, gaps: bo
             "lowest_z": lowest, "sampled": step > 1}
 
 
+def designer_report(path: Path, used: dict) -> dict | None:
+    """What became of the settings a 3MF's designer saved, against the settings the project was written with:
+    which presets it came from, the shape-dependent settings kept and replaced, and the designer's other
+    changes, which are left behind. None when the file carries no slicer settings."""
+    if path.suffix.lower() != ".3mf":
+        return None
+    try:
+        with zipfile.ZipFile(path) as archive:
+            data = json.loads(archive.read("Metadata/project_settings.config"))
+    except (KeyError, ValueError, zipfile.BadZipFile, OSError):
+        return None
+    first = lambda value: str(value[0] if isinstance(value, list) and value else value)
+    kept, replaced = {}, {}
+    for key in DESIGNER_KEYS:
+        if data.get(key) not in (None, "", []):
+            theirs, ours = first(data[key]), first(used.get(key))
+            if theirs == ours:
+                kept[key] = theirs
+            else:
+                replaced[key] = {"designer": theirs, "used": ours}
+    changed = sorted(set(";".join(data.get("different_settings_to_system") or []).split(";")) - {""} - set(DESIGNER_KEYS))
+    return {"made_for": {"printer": data.get("printer_settings_id"), "process": data.get("print_settings_id"),
+                         "filaments": data.get("filament_settings_id")},
+            "kept": kept, "replaced": replaced, "left_behind": changed}
+
+
 def object_shapes(loaded: dict) -> list[dict]:
     """For each object as it stands: its height, the narrower side of its footprint, and how much of it rests on the bed."""
     out = []
@@ -413,7 +444,7 @@ def designer_settings(path: Path) -> dict:
 THIN_WALL_MM2 = 5.0   # wall area thinner than two nozzle widths, or facing a gap narrower than one, before it is worth a warning
 
 
-def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE, nozzle: float = 0.4) -> dict:
+def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE, nozzle: float = 0.4, plate: int = 1) -> dict:
     """Return size, volume and printability hints for a model file.
 
     support_angle is the slicer's support_threshold_angle: a downward face flatter
@@ -426,7 +457,7 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE, nozzle: fl
     if path.suffix.lower() not in MESH_SUFFIXES:
         return {"file": str(path), "analysed": False,
                 "note": "Shape analysis covers STL, OBJ, 3MF and STEP."}
-    loaded = load_objects(path)
+    loaded = load_objects(path, plate)
     tris, notes = np.concatenate([part["tris"] for obj in loaded["objects"] for part in obj["parts"]]), loaded["notes"]
     lo, hi = tris.reshape(-1, 3).min(axis=0), tris.reshape(-1, 3).max(axis=0)
     size = hi - lo
@@ -471,6 +502,7 @@ def analyse(path: Path, support_angle: float = DEFAULT_SUPPORT_ANGLE, nozzle: fl
         "fits_bed_if_rotated": bool(sorted(size)[0] <= BED_Z and sorted(size)[1] <= BED_X and sorted(size)[2] <= BED_X),
         "objects": [obj["name"] for obj in loaded["objects"]],
         "parts": sum(len(obj["parts"]) for obj in loaded["objects"]),
+        "plates": loaded.get("plates", 1),
         "filaments_needed": filaments_needed(loaded),
         "colours": loaded["colours"],
         "fine_detail": fine,

@@ -87,6 +87,8 @@ python3 -m venv .venv
 | `analyse_model` | Measures an STL, OBJ, 3MF or STEP: size, volume, bed contact, overhangs, parts, toolheads used, fit on the 256 mm bed, and the print check |
 | `preview` | Returns a picture: the plate with every part in its toolhead's colour, or one sliced layer from above |
 | `printer_status` | Reads the printer's state, progress, temperatures and loaded filament over the home network. Read-only |
+| `reprint_objects` | Writes a project of only the named objects of a sliced plate, with a brim, to reprint parts that failed |
+| `compare_settings` | Slices a model twice with two levels of quality or strength and gives the time, filament and settings that differ |
 | `recommend_settings` | Returns the chosen presets and settings with reasons, without slicing |
 | `slice_model` | Analyses, chooses settings, writes the project, slices it, and confirms each setting reached the G-code |
 | `open_in_slicer` | Opens the project in a new Flash Studio window, ready for Slice and Print |
@@ -188,6 +190,14 @@ The check is the `cad` command from [text-to-cad](https://github.com/earthtojake
 
 `models/dualsense_hook/build_hook.py` is a part written with [build123d](https://github.com/gumyr/build123d): named dimensions at the top, an exact solid, a STEP file out. Change a number, run `cad run build_hook.py` in that folder (with `cad server start` before and `cad server stop` after), and give the STEP to `slice_model`.
 
+## Reprinting parts that failed
+
+When some parts of a plate fail, `reprint_objects` takes the project and the numbers of those parts and writes a new project with them alone: the same presets, changed settings and pause, plus a 5 mm brim. `record_print_result` lists the numbers when a plate of several is reported as failed.
+
+## Is stronger or finer worth it?
+
+`compare_settings` slices one model twice, with two levels of quality or strength, and returns each slice's time, filament and layers, the difference, and every setting that differs. Both projects are kept.
+
 ## Pausing to embed something
 
 `pause_before_z` (or `--pause-before-z`) pauses the print before the layer whose top is at that height, using the printer's own pause command, so a magnet, nut or NFC tag can go into a pocket. The server confirms the pause in the G-code and reports it as `pauses_at_z`. Pick a height that is the top of a layer: with 0.2 mm layers and a 0.2 mm first layer, a pocket that ends at 2.8 mm needs `pause_before_z` 3.0.
@@ -223,7 +233,8 @@ This server never sends anything to the printer. Flash Studio's own Print button
 ## Limits in this version
 
 - Models can be STL, OBJ, 3MF or STEP. STEP needs the optional `cascadio` library (about 70 MB), which `scripts/setup.sh` installs; with `pip`, install `creator5-slicer-mcp[step]`. Without it, a STEP file gets a message saying how to add it.
-- From a 3MF with several plates, only plate 1 is used.
+- From a 3MF with several plates, one plate is used: the first unless `plate` says otherwise. The result's `model.plates` says how many there are.
+- A 3MF saved by a slicer comes with `designer_report`: the printer it was set up for, the shape settings kept and replaced, and the designer's other changes, which are not carried over.
 - `auto_orient` works on single-part models only. Turning a model of several parts would merge them.
 - Every toolhead shares one process. Where two materials want different process settings, the slower speed wins.
 - Every toolhead shares one bed. The slicer heats it to the highest temperature any filament asks for; when filaments differ by 10 C or more, a warning says which toolhead that is too hot for.
