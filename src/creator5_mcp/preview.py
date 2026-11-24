@@ -1,7 +1,7 @@
 """Pictures of what was made: the plate as the project holds it, and one sliced layer from above.
 
 Flash Studio's command line cannot draw (it has no OpenGL without a window), so these are drawn
-here with numpy and Pillow. `_view`, `_rasterize` and `_paint_slot` are adapted from
+here with numpy and Pillow. `_view` and `_rasterize` are adapted from
 unofficial-bambu-mcp's preview.py, Copyright (c) 2026 Daniele Finocchiaro, MIT licence: see
 THIRD_PARTY_NOTICES.md.
 """
@@ -91,21 +91,46 @@ def _rasterize(px: np.ndarray, z: np.ndarray, rgb: np.ndarray, width: int, heigh
     return cbuf.reshape(height, width, 3)
 
 
-def _paint_slot(code: str) -> int | None:
-    """The 1-based toolhead a painted triangle is given, from Bambu/Orca's paint_color string, read from
-    its last character: the two low bits say the triangle is split, the two high bits its state, and state 3
-    means the character before it plus 3. '4' is 1, '8' is 2, '0C' is 3, '1C' is 4.
-    None for an unpainted triangle and for one split into smaller painted pieces."""
-    try:
-        last = int(code[-1], 16)
-        if last & 3:
-            return None
-        state = last >> 2
-        if state == 3:
-            state = int(code[-2], 16) + 3
-        return state or None
-    except (ValueError, IndexError):
-        return None
+def _painted(tri: np.ndarray, code: str, slot: int) -> list[tuple[np.ndarray, int]]:
+    """One colour-painted triangle as the pieces it was painted in: [(triangle, 1-based toolhead)].
+
+    Bambu/Orca `paint_color`, as TriangleSelector::serialize writes it and perform_split divides it. The string
+    is hexadecimal read from its last character backwards. Each character is one node: its two low bits say how
+    many sides are split (0 for a whole piece), its two high bits give the toolhead of a whole piece (3 means the
+    next character plus 3; 0 means unpainted, so the part's own toolhead) or, for a split one, the special side.
+    A split node is followed by its pieces, the last piece first.
+    """
+    nibbles = [int(ch, 16) for ch in reversed(code)]
+    at = 0
+    out: list[tuple[np.ndarray, int]] = []
+
+    def read(points: np.ndarray) -> None:
+        nonlocal at
+        node = nibbles[at]
+        at += 1
+        sides, high = node & 3, node >> 2
+        if not sides:
+            if high == 3:
+                high = nibbles[at] + 3
+                at += 1
+            out.append((points, high or slot))
+            return
+        v = [points[(high + k) % 3] for k in range(3)]
+        mid = lambda a, b: (a + b) / 2
+        if sides == 1:
+            v = [v[0], v[1], mid(v[2], v[1]), v[2]]
+            pieces = [(0, 1, 2), (2, 3, 0)]
+        elif sides == 2:
+            v = [v[0], mid(v[1], v[0]), v[1], v[2], mid(v[0], v[2])]
+            pieces = [(0, 1, 4), (1, 2, 4), (2, 3, 4)]
+        else:
+            v = [v[0], mid(v[1], v[0]), v[1], mid(v[2], v[1]), v[2], mid(v[0], v[2])]
+            pieces = [(0, 1, 5), (1, 2, 3), (3, 4, 5), (1, 3, 5)]
+        for piece in reversed(pieces):
+            read(np.array([v[i] for i in piece]))
+
+    read(tri)
+    return out
 
 
 def _png(pixels: np.ndarray, size: int) -> bytes:
@@ -114,11 +139,18 @@ def _png(pixels: np.ndarray, size: int) -> bytes:
     return buffer.getvalue()
 
 
-def plate_png(project: Path, view: str = "iso", size: int = 900) -> tuple[bytes, list[str]]:
-    """The plate as the project file holds it: the 256 mm bed and every part in its toolhead's colour.
+def fills_little(project: Path, share: float = 0.25) -> bool:
+    """True when the parts cover under `share` of the bed, so a picture of the whole bed would show them small."""
+    points = np.concatenate([part["tris"].reshape(-1, 3) for obj in model.load_objects(project)["objects"] for part in obj["parts"]])
+    return float(np.ptp(points[:, 0]) * np.ptp(points[:, 1])) < share * model.BED_X * model.BED_Y
 
-    view is "iso" (from the front left, looking down) or "top". Returns the PNG and any notes about
-    what could not be drawn as it will print.
+
+def plate_png(project: Path, view: str = "iso", size: int = 900, zoom: bool = False) -> tuple[bytes, list[str]]:
+    """The plate as the project file holds it: the 256 mm bed and every part in its toolhead's colour,
+    colour-painted faces in the colours they were painted.
+
+    view is "iso" (from the front left, looking down) or "top". zoom frames the parts and not the whole bed.
+    Returns the PNG and any notes about what could not be drawn as it will print.
     """
     if view not in ("iso", "top"):
         raise model.ModelError("view must be iso or top")
@@ -126,17 +158,33 @@ def plate_png(project: Path, view: str = "iso", size: int = 900) -> tuple[bytes,
     colours = loaded["colours"]
     # A black filament would vanish against the dark bed, so no colour is drawn darker than a deep grey.
     palette = np.array([np.maximum(_rgb(colours[s] if s < len(colours) and colours[s] else UNKNOWN), 52) for s in range(16)])
-    tris, shades, split = [], [], 0
+    tris, shades, unread = [], [], 0
     for obj in loaded["objects"]:
         for part in obj["parts"]:
-            slot = np.full(len(part["tris"]), part["extruder"] or 1)
-            for i, code in enumerate(part["paint"] or []):
-                if code:
-                    painted = _paint_slot(code)
-                    split += painted is None
-                    slot[i] = painted or slot[i]
-            tris.append(part["tris"])
-            shades.append(palette[np.clip(slot, 1, 16) - 1])
+            own = part["extruder"] or 1
+            codes = part["paint"] or []
+            slots = np.full(len(part["tris"]), own)
+            plain = np.ones(len(part["tris"]), bool)
+            whole: dict[str, int | None] = {}              # each code read once: most models repeat a few whole-triangle codes
+            for code in set(codes) - {""}:
+                try:
+                    pieces = _painted(np.zeros((3, 3)), code, own)
+                    whole[code] = pieces[0][1] if len(pieces) == 1 else None
+                except (ValueError, IndexError):
+                    whole[code] = own
+                    unread += codes.count(code)
+            for i, code in enumerate(codes):
+                if not code:
+                    continue
+                if whole[code] is not None:
+                    slots[i] = whole[code]
+                    continue
+                pieces = _painted(part["tris"][i], code, own)
+                plain[i] = False
+                tris.append(np.array([piece for piece, _ in pieces]))
+                shades.append(palette[np.clip([slot for _, slot in pieces], 1, 16) - 1])
+            tris.append(part["tris"][plain])
+            shades.append(palette[np.clip(slots[plain], 1, 16) - 1])
     tris, base = np.concatenate(tris), np.concatenate(shades)
     normal = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
     length = np.linalg.norm(normal, axis=1)
@@ -148,14 +196,14 @@ def plate_png(project: Path, view: str = "iso", size: int = 900) -> tuple[bytes,
     bed[:, :, 2] -= 0.05                                   # just under the parts, so the first layer shows on it
     tris, rgb = np.concatenate([bed, tris]), np.concatenate([np.tile(BED_COLOUR, (2, 1)), rgb])
     seen = _view(tris.reshape(-1, 3), view)
-    scale = 2 * size * 0.92 / max(np.ptp(seen[:, 0]), np.ptp(seen[:, 1]))
-    centre = (seen[:, :2].min(0) + seen[:, :2].max(0)) / 2
+    frame = seen[6:] if zoom else seen                     # the first six points are the bed's corners
+    scale = 2 * size * (0.8 if zoom else 0.92) / max(np.ptp(frame[:, 0]), np.ptp(frame[:, 1]))
+    centre = (frame[:, :2].min(0) + frame[:, :2].max(0)) / 2
     px = np.empty((len(seen), 2))
     px[:, 0] = size + (seen[:, 0] - centre[0]) * scale
     px[:, 1] = size - (seen[:, 1] - centre[1]) * scale     # image rows run downwards
     pixels = _rasterize(px.reshape(-1, 3, 2), seen[:, 2].reshape(-1, 3), rgb.astype(np.uint8), 2 * size, 2 * size)
-    notes = [f"{split} colour-painted triangles are split into smaller painted pieces; the picture shows them in "
-             "their part's colour, not the painted one."] if split else []
+    notes = [f"{unread} colour-painted triangles could not be read; the picture shows them in their part's colour."] if unread else []
     return _png(pixels, size), notes
 
 

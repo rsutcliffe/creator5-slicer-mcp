@@ -842,3 +842,28 @@ def test_a_rib_the_gcode_leaves_out_is_found_at_a_third_of_a_millimetre(fake_env
     without = slicecheck.check(project, _gcode(tmp_path / "without.gcode", [[("Outer wall", 0, block)]] * 20))
     assert with_rib["smaller"] == [] and with_rib["warnings"] == []
     assert without["smaller"] and 1.5 < without["smaller"][0]["missing_mm2"] < 4 and "prints smaller than its model" in without["warnings"][0]
+
+
+def test_painted_triangles_are_split_as_the_slicer_splits_them_and_small_parts_are_framed(fake_env, cube_stl):
+    import numpy as np
+    from creator5_mcp import preview
+    tri = np.array([[0.0, 0, 0], [4, 0, 0], [0, 4, 0]])
+    area = lambda t: abs(np.cross(t[1] - t[0], t[2] - t[0])[2]) / 2
+    # Whole triangles: toolheads 1 to 4, and unpainted, which keeps the part's own.
+    assert [preview._painted(tri, code, 7)[0][1] for code in ("4", "8", "0C", "1C", "0")] == [1, 2, 3, 4, 7]
+    # Split on all three sides into four pieces, written last piece first: corners 1, 2, 1 and the middle 2.
+    four = preview._painted(tri, "48483", 7)
+    assert [slot for _, slot in four] == [2, 1, 2, 1] and [area(t) for t, _ in four] == [2.0] * 4
+    assert sorted(tuple(np.round(t.mean(axis=0)[:2], 3)) for t, _ in four)[0] == (0.667, 0.667)       # the corner piece at the origin
+    # One side split in two, the half nearer the first corner painted 2 and the other left to the part.
+    two = preview._painted(tri, "085", 7)
+    assert sum(area(t) for t, _ in two) == 8.0 and sorted(slot for _, slot in two) == [2, 7]
+    # A piece split again: three pieces, and together they still cover the whole triangle.
+    nested = preview._painted(tri, "48141", 7)
+    assert len(nested) == 3 and sum(area(t) for t, _ in nested) == 8.0 and sorted(slot for _, slot in nested) == [1, 1, 2]
+    # A 20 mm cube is a few pixels on the whole bed; framed, it fills the picture.
+    project = Path(server.slice_model(str(cube_stl), "red PLA")["project_3mf"])
+    red = lambda png: int(((_pixels(png)[:, :, 0] > 120) & (_pixels(png)[:, :, 1] < 80)).sum())
+    assert preview.fills_little(project)
+    whole, framed = red(preview.plate_png(project, "top")[0]), red(preview.plate_png(project, "top", zoom=True)[0])
+    assert 3500 < whole < 5000 and framed > 400_000
