@@ -97,10 +97,12 @@ def status(wait: float = 2.0, probes: tuple = PROBES, code_for=check_code) -> di
            "others_found": len(printers) - 1, "status_read": False}
     code = code_for(printer["serial_number"])
     if not code:
-        out["message"] = ("The printer was found, but its check code is not stored on this Mac, so its status cannot be read. "
-                          "The code is shown on the printer's network screen. Store it once by running this in Terminal, "
-                          "which asks for the code and keeps it in the Keychain: "
-                          f"security add-generic-password -s {KEYCHAIN_SERVICE} -a {printer['serial_number']} -w   " + LAN_ONLY)
+        store = ("The check code is shown on the printer's network screen. Store it once by running this in Terminal, which asks "
+                 f"for the code and keeps it in the Keychain: security add-generic-password -s {KEYCHAIN_SERVICE} -a {printer['serial_number']} -w")
+        # The printer says which mode it is in when it answers the probe, so cloud mode is known without asking it anything more.
+        out["message"] = (f"The printer was found, and it is in cloud mode, so it will not answer a status request. {LAN_ONLY} "
+                          f"If you switch to LAN-only mode, its check code is also needed. {store}" if printer["mode"] == "cloud" else
+                          f"The printer was found, but its check code is not stored on this Mac, so its status cannot be read. {store}")
         return out
     try:
         reply = _ask(printer, code, max(wait, 5.0))
