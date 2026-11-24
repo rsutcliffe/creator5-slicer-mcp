@@ -229,7 +229,8 @@ def _documents(title: str, objects: list[dict], copies: int, toolheads: int,
     per-object settings are.
     """
     offset, size, positions = _layout(objects, copies)
-    per_object = "".join(f'    <metadata key="{_xml(k)}" value="{_xml(str(v))}"/>\n' for k, v in sorted((object_settings or {}).items()))
+    own = lambda obj: "".join(f'    <metadata key="{_xml(k)}" value="{_xml(str(v))}"/>\n'
+                              for k, v in sorted({**(object_settings or {}), **(obj.get("settings") or {})}.items()))
     model = ['<?xml version="1.0" encoding="UTF-8"?>\n',
              '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" '
              'xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06" xmlns:BambuStudio="http://schemas.bambulab.com/package/2021">\n',
@@ -270,7 +271,7 @@ def _documents(title: str, objects: list[dict], copies: int, toolheads: int,
         model.append('   </components>\n  </object>\n')
         first = min(obj["parts"][0]["extruder"] or 1, toolheads)
         config.append(f'  <object id="{next_id}">\n    <metadata key="name" value="{_xml(obj["name"])}"/>\n'
-                      f'    <metadata key="extruder" value="{first}"/>\n' + per_object + "".join(part_config) + '  </object>\n')
+                      f'    <metadata key="extruder" value="{first}"/>\n' + own(obj) + "".join(part_config) + '  </object>\n')
         build += [f'  <item objectid="{next_id}" transform="1 0 0 0 1 0 0 0 1 {x:.4f} {y:.4f} 0" printable="1"/>\n' for x, y in positions]
         next_id += 1
     model.append(' </resources>\n <build>\n')
@@ -282,16 +283,19 @@ def _documents(title: str, objects: list[dict], copies: int, toolheads: int,
 
 def write_project(profiles_dir: Path, model_path: Path, plan: dict, out_path: Path, copies: int = 1,
                   extra_process: dict | None = None, extra_filament: dict | None = None,
-                  colour: str = "#161616", pause_before_z: float = 0, plate: int = 1) -> dict:
+                  colour: str = "#161616", pause_before_z: float = 0, plate: int = 1,
+                  loaded: dict | None = None) -> dict:
     """Create the .3mf project and return a short description of it.
 
     colour is used only when the plan does not list its filaments.
     pause_before_z, in mm, pauses the print before the layer whose top is at that height,
-    with the printer's own pause command."""
+    with the printer's own pause command.
+    loaded, when given, is the model itself, as model.load_objects returns it, used in place of the file.
+    An object in it may carry "settings": {setting: value} of its own, written as per-object settings."""
     if copies < 1:
         raise ProjectError("copies must be at least 1")
     try:
-        loaded = model_mod.load_objects(model_path, plate)   # STL, OBJ or 3MF, oriented and placed as the file has it
+        loaded = loaded or model_mod.load_objects(model_path, plate)   # STL, OBJ or 3MF, oriented and placed as the file has it
     except model_mod.ModelError as exc:
         raise ProjectError(str(exc)) from exc
     settings, unknown = project_settings(profiles_dir, plan, extra_process, extra_filament, colour)

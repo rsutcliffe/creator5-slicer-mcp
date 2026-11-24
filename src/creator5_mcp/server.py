@@ -16,7 +16,7 @@ try:  # mcp 2.x
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP, Image
 
-from . import __version__, model, preview as pictures, printcheck, printer, profiles, project, recommend, results, slicecheck, slicer, spools
+from . import __version__, flowtest, model, preview as pictures, printcheck, printer, profiles, project, recommend, results, slicecheck, slicer, spools
 from .config import ConfigError, load_settings
 
 mcp = FastMCP(
@@ -40,7 +40,9 @@ mcp = FastMCP(
         "after the user presses Slice plate in Flash Studio, call check_flash_studio_slice to confirm each toolhead's "
         "temperatures. Pass finish=smooth when the user wants a smooth or professional surface. When the user says how a print "
         "came out, call record_print_result; when only some parts of a plate failed, reprint_objects makes a project "
-        "of those alone. When the user wonders whether stronger or finer is worth it, compare_settings slices both and "
+        "of those alone. For a new spool, or one whose prints look rough at speed, flow_test writes a short test print "
+        "and record_flow_test saves the limit it finds. "
+        "When the user wonders whether stronger or finer is worth it, compare_settings slices both and "
         "gives the time and filament of each. When the user asks about the printer, or before telling them to load "
         "filament, call printer_status: it reads what the printer is doing and what is loaded in each toolhead, and "
         "changes nothing. The user prints from Flash Studio; this server never sends anything to the printer."
@@ -163,6 +165,89 @@ def save_spool(name: str, filament: str, nozzle_temp: int = 0, bed_temp: int = 0
         settings = load_settings()
         recommend.match_material(filament)   # refuse a material this server cannot place
         return {"ok": True, "spool": spools.save(settings.output_dir, name, filament, nozzle_temp, bed_temp, max_speed, colour, max_flow)}
+    except _ERRORS + (ValueError,) as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def flow_test(filament: str, start: float = 5, end: float = 25, step: float = 2.5, nozzle: str = "0.4",
+              nozzle_temp: int = 0, bed_temp: int = 0, pro: bool = False) -> dict:
+    """Write a test print that finds how much plastic a spool can melt each second: its real flow limit.
+
+    The plate holds one short tube for each flow from start to end, slowest at the front left, rising left to
+    right and then row by row to the back. The user prints it, finds the last tube whose wall is smooth and
+    full, and says its number; record_flow_test then saves that flow as the spool's limit. Open the project
+    with open_in_slicer. Nothing is changed on the printer.
+
+    Args:
+        filament: The filament or saved spool to test, e.g. "black pla".
+        start: Flow of the first tube in mm3/s.
+        end: Flow of the last tube in mm3/s.
+        step: Rise in flow from one tube to the next. At most 15 tubes fit.
+        nozzle: Nozzle diameter in mm.
+        nozzle_temp: Nozzle temperature in C from the spool's label, or 0 to use the spool's or the preset's.
+        bed_temp: Bed temperature in C, or 0 likewise.
+        pro: True for the Creator 5 Pro.
+    """
+    try:
+        settings = load_settings()
+        profiles_dir = settings.require_profiles()
+        height = round(float(nozzle) * 0.7, 2)          # the thickest layer the Creator 5's preset allows for this nozzle
+        test = flowtest.plate(float(nozzle), height, start, end, step)
+        plan, _ = _plan(None, filament, "standard", "standard", nozzle, "off", "off", height, False, False, pro, nozzle_temp, bed_temp)
+        # The label's speed and any earlier flow limit are what this test replaces, so the cap is lifted for it.
+        plan["filaments"][0]["overrides"] = {k: v for k, v in plan["filaments"][0]["overrides"].items() if k != "filament_max_volumetric_speed"}
+        job_dir = settings.output_dir / f"{time.strftime('%Y%m%d_%H%M%S')}_flow_test"
+        made = project.write_project(profiles_dir, job_dir / "tubes", plan, job_dir / "flow_test.3mf", 1,
+                                     test["process"], test["filament"], loaded=test["loaded"])
+        result = slicer.slice_project(settings, Path(made["project"]), job_dir)
+        placed = model.load_objects(Path(made["project"]))["objects"]
+        printed = flowtest.measured(placed, Path(result["gcode"]), test["line_width_mm"] * test["layer_height_mm"])
+        tubes = [{"tube": i + 1, "flow_mm3_s": flow, "flow_in_gcode": got} for i, (flow, got) in enumerate(zip(test["flows"], printed))]
+        off = [t["tube"] for t in tubes if t["flow_in_gcode"] is None or abs(t["flow_in_gcode"] - t["flow_mm3_s"]) > 0.05 * t["flow_mm3_s"]]
+        # The plan picks the nearest preset layer height; the test then sets its own, so that remark would mislead.
+        warnings = [w for w in plan["warnings"] if not w.startswith("No preset at")]
+        if off:
+            warnings.append(f"The G-code does not print tube {', '.join(map(str, off))} at the flow asked for, so the test would mislead. "
+                            "Do not print it; report this.")
+        drawn = _draw(Path(made["project"]), Path(result["gcode"]), job_dir, result["notes"])
+        return {"ok": True, "project_3mf": made["project"], **result, **drawn, "tubes": tubes, "warnings": warnings,
+                "filament_preset": plan["filaments"][0]["preset"], "nozzle_temperature": made["settings"].get("nozzle_temperature"),
+                "how_to_read": "Tube 1 is at the front left. Flow rises left to right, then row by row to the back. Find the last tube "
+                               "whose wall is smooth, full and well bonded, before walls turn thin, rough or matt. Give that tube's "
+                               "number to record_flow_test."}
+    except _ERRORS + (ValueError,) as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def record_flow_test(spool: str, project_3mf: str, last_good_tube: int, filament: str = "") -> dict:
+    """Save a flow test's result as a spool's flow limit, used at every layer height from then on.
+
+    Args:
+        spool: The saved spool's name, or a name for a new one.
+        project_3mf: The project_3mf path flow_test returned for the test that was printed.
+        last_good_tube: The number of the last tube whose wall printed smooth and full, counted as flow_test describes.
+        filament: The material and maker, needed only when the spool is not saved yet.
+    """
+    try:
+        settings = load_settings()
+        flows = flowtest.flows_in(model.load_objects(_path(project_3mf))["objects"])
+        if not 1 <= last_good_tube <= len(flows):
+            return _fail(ValueError(f"The test has tubes 1 to {len(flows)}."))
+        known = spools.find(settings.output_dir, spool) or {}
+        material = known.get("filament") or filament
+        if not material:
+            return _fail(ValueError(f"No spool called '{spool}' is saved. Say what the filament is, for example PETG."))
+        recommend.match_material(material)
+        saved = spools.save(settings.output_dir, known.get("name") or spool, material, known.get("nozzle_temp", 0),
+                            known.get("bed_temp", 0), known.get("max_speed", 0), known.get("colour", ""), flows[last_good_tube - 1])
+        out = {"ok": True, "spool": saved, "flow_limit_mm3_s": flows[last_good_tube - 1], "replaced": known.get("max_flow") or None}
+        if last_good_tube == len(flows):
+            out["note"] = "Every tube was good, so the real limit is higher. Run flow_test again starting at this flow."
+        if last_good_tube == 1:
+            out["note"] = "Only the first tube was good, so the real limit may be lower. Run flow_test again with a lower start."
+        return out
     except _ERRORS + (ValueError,) as exc:
         return _fail(exc)
 
